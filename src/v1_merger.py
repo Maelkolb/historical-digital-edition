@@ -142,9 +142,6 @@ def merge_into_v1(
         logger.info("Merged %d image manifest entries.", len(new_image_manifest))
 
     # 5. Update sidebar stats (page count and annotation count)
-    #    Page count: <span class="value">86</span> in the first stat-row
-    _update_sidebar_stats(html, new_page_articles)
-
     # Count total pages and entities from the merged HTML
     total_pages = len(re.findall(r'class="page-article"', html))
     total_entities = len(re.findall(r'class="entity"', html))
@@ -183,8 +180,3 @@ def merge_into_v1(
     logger.info("Combined edition written: %s (%.1f MB)", output_path, size_mb)
 
     return output_path
-
-
-def _update_sidebar_stats(html: str, articles: List[str]) -> None:
-    """Helper — sidebar stat updates are done via regex in the caller."""
-    pass

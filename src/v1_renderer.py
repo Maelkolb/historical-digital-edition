@@ -260,7 +260,7 @@ def render_v1_page(
             f'src="" style="opacity:0; transition: opacity 0.5s;"/>'
             f'</div>'
             f'<div class="zoom-hint">'
-            f'{_bilingual("Klicken für Vollbild", "Click for fullscreen")}</div>'
+            f'{_bilingual("Klicken zum Vergrößern", "Click to zoom")}</div>'
             f'</div>'
         )
     else:

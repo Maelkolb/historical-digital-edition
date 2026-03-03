@@ -55,7 +55,6 @@ def geocode_location(
     except (requests.RequestException, ValueError, KeyError) as exc:
         logger.warning("Geocode failed for %r: %s", name, exc)
 
-    time.sleep(delay)
     return None
 
 
