@@ -13,8 +13,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
-MODEL_ID: str = "gemini-2.5-flash-preview-04-17"   # update as needed
-THINKING_LEVEL: str = "high"                        # "none" | "low" | "medium" | "high"
+MODEL_ID: str = "gemini-3-flash-preview"   # update as needed
+THINKING_LEVEL: str = "low"                        # "none" | "low" | "medium" | "high"
 
 # ---------------------------------------------------------------------------
 # Paths  (override via environment variables or edit here)
