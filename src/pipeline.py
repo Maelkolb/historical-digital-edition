@@ -26,6 +26,57 @@ VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 
 
 # ---------------------------------------------------------------------------
+# Loading previous results
+# ---------------------------------------------------------------------------
+
+
+def load_results_from_json(source: str | Path) -> List[PageResult]:
+    """
+    Load previously processed PageResult objects from JSON.
+
+    Args:
+        source: Either a combined JSON file (list of page dicts) or a
+                directory containing individual ``page_NNNN.json`` files.
+
+    Returns:
+        List of PageResult objects sorted by page number.
+    """
+    source = Path(source)
+    if source.is_file():
+        logger.info("Loading combined results from %s", source)
+        with open(source, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        results = [PageResult.from_dict(d) for d in data]
+    elif source.is_dir():
+        logger.info("Loading individual page JSONs from %s", source)
+        json_files = sorted(source.glob("page_*.json"))
+        results = []
+        for jf in json_files:
+            with open(jf, "r", encoding="utf-8") as fh:
+                results.append(PageResult.from_dict(json.load(fh)))
+    else:
+        raise FileNotFoundError(f"No file or directory at {source}")
+
+    results.sort(key=lambda r: r.page_number)
+    logger.info("Loaded %d previous page results.", len(results))
+    return results
+
+
+def merge_results(*result_lists: List[PageResult]) -> List[PageResult]:
+    """
+    Merge multiple lists of PageResult, keeping the latest version if a
+    page number appears more than once, then sort by page number.
+    """
+    by_page: Dict[int, PageResult] = {}
+    for result_list in result_lists:
+        for r in result_list:
+            by_page[r.page_number] = r  # later lists overwrite earlier
+    merged = sorted(by_page.values(), key=lambda r: r.page_number)
+    logger.info("Merged result: %d unique pages.", len(merged))
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

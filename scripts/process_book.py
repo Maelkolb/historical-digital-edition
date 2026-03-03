@@ -68,6 +68,11 @@ def main() -> None:
         help="Embed facsimile images in the HTML (makes file larger)",
     )
     parser.add_argument(
+        "--image-ref-prefix", default=None,
+        help="Reference images via this path prefix instead of embedding "
+             "(e.g. 'images/' or a URL). Mutually exclusive with --embed-images.",
+    )
+    parser.add_argument(
         "--title", default="Historische Digitalausgabe",
         help="Title shown in the HTML edition",
     )
@@ -100,6 +105,7 @@ def main() -> None:
             entity_colors=config.ENTITY_COLORS,
             entity_labels=config.ENTITY_LABELS,
             image_folder=args.images if args.embed_images else None,
+            image_ref_prefix=args.image_ref_prefix,
         )
         print(f"\n📖  Digital edition: {html_path}")
 

@@ -228,17 +228,23 @@ def generate_html_edition(
     entity_colors: Optional[Dict[str, str]] = None,
     entity_labels: Optional[Dict[str, str]] = None,
     image_folder: Optional[str | Path] = None,
+    image_ref_prefix: Optional[str] = None,
 ) -> Path:
     """
     Generate a single self-contained HTML edition from *results*.
 
     Args:
-        results:       Processed page results.
-        output_path:   Destination .html file.
-        title:         Edition title shown in the nav bar.
-        entity_colors: Dict mapping entity type → hex colour.
-        entity_labels: Dict mapping entity type → German display label.
-        image_folder:  If provided, embeds facsimile images as base64.
+        results:          Processed page results.
+        output_path:      Destination .html file.
+        title:            Edition title shown in the nav bar.
+        entity_colors:    Dict mapping entity type → hex colour.
+        entity_labels:    Dict mapping entity type → German display label.
+        image_folder:     If provided, embeds facsimile images as base64.
+                          Mutually exclusive with *image_ref_prefix*.
+        image_ref_prefix: If provided, reference images via this path prefix
+                          instead of embedding (e.g. ``"images/"`` or a full
+                          URL).  The final ``src`` will be
+                          ``{image_ref_prefix}{image_filename}``.
 
     Returns:
         Path to the written HTML file.
@@ -269,13 +275,23 @@ def generate_html_edition(
     for idx, result in enumerate(results):
         # Facsimile
         facs_html = ""
-        if image_folder:
+        if image_ref_prefix is not None:
+            # Reference mode: point to external image file
+            prefix = image_ref_prefix.rstrip("/") + "/" if image_ref_prefix else ""
+            img_src = f"{prefix}{result.image_filename}"
+            facs_html = (
+                f'<div class="facsimile-toggle">'
+                f'<button data-target="facs-{idx}">Original einblenden / ausblenden</button></div>'
+                f'<div class="facsimile" id="facs-{idx}">'
+                f'<img src="{img_src}" alt="Faksimile Seite {result.page_number}" loading="lazy"></div>'
+            )
+        elif image_folder:
             img_path = Path(image_folder) / result.image_filename
             if img_path.exists():
                 b64, _ = load_image_as_base64(img_path)
                 facs_html = (
                     f'<div class="facsimile-toggle">'
-                    f'<button data-target="facs-{idx}">📷 Original einblenden / ausblenden</button></div>'
+                    f'<button data-target="facs-{idx}">Original einblenden / ausblenden</button></div>'
                     f'<div class="facsimile" id="facs-{idx}">'
                     f'<img src="data:image/jpeg;base64,{b64}" alt="Faksimile Seite {result.page_number}"></div>'
                 )
@@ -309,7 +325,9 @@ def generate_html_edition(
         for e in result.entities:
             counts[e.entity_type] = counts.get(e.entity_type, 0) + 1
         stats_rows = "".join(
-            f'<tr><td style="color:{ec.get(t,\"#555\")}">●&nbsp;{t}</td><td>{c}</td></tr>'
+            '<tr><td style="color:{}">●&nbsp;{}</td><td>{}</td></tr>'.format(
+                ec.get(t, "#555"), t, c
+            )
             for t, c in sorted(counts.items(), key=lambda x: -x[1])
         )
         stats_panel = (
