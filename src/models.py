@@ -83,3 +83,37 @@ class PageResult:
             "processing_timestamp": self.processing_timestamp,
             "model_used": self.model_used,
         }
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "PageResult":
+        """Reconstruct a PageResult from a dictionary (e.g. loaded from JSON)."""
+        struct = d["structure"]
+        footnotes = [
+            Footnote(marker=fn.get("marker", ""), text=fn.get("text", ""))
+            for fn in struct.get("footnotes", [])
+        ]
+        structure = PageStructure(
+            page_number_printed=struct.get("page_number_printed"),
+            header=struct.get("header"),
+            content_blocks=struct.get("content_blocks", []),
+            footnotes=footnotes,
+        )
+        entities = [
+            Entity(
+                text=e["text"],
+                entity_type=e["entity_type"],
+                start_char=e["start_char"],
+                end_char=e["end_char"],
+                context=e.get("context"),
+            )
+            for e in d.get("entities", [])
+        ]
+        return cls(
+            page_number=d["page_number"],
+            image_filename=d["image_filename"],
+            structure=structure,
+            ocr_text=d.get("ocr_text", ""),
+            entities=entities,
+            processing_timestamp=d.get("processing_timestamp", ""),
+            model_used=d.get("model_used", ""),
+        )
