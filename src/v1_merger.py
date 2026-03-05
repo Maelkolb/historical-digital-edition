@@ -68,6 +68,7 @@ def merge_into_v1(
     new_page_articles: List[str],
     new_map_data: Optional[Dict[int, Dict]] = None,
     new_image_manifest: Optional[Dict[str, str]] = None,
+    new_tei_data: Optional[Dict] = None,
     output_path: Optional[str | Path] = None,
 ) -> Path:
     """
@@ -81,6 +82,8 @@ def merge_into_v1(
                              (output of :func:`build_page_map_data`).
         new_image_manifest:  Dict mapping page number (str) → Google Drive
                              file ID for facsimile images.
+        new_tei_data:        Dict with ``{"fullBook": str, "pages": {...}}``
+                             from :func:`build_tei_data`.
         output_path:         Destination file.  Defaults to
                              ``digital_edition_complete.html`` next to the
                              V1 file.
@@ -172,6 +175,51 @@ def merge_into_v1(
         count=1,
     )
     logger.info("Updated sidebar stats: %d pages, %d entities.", total_pages, total_entities)
+
+    # 6. Merge TEI data into the embedded <script id="tei-xml-data"> block
+    if new_tei_data:
+        tei_script_pattern = re.compile(
+            r'(<script\s+id="tei-xml-data"\s+type="application/json">)(.*?)(</script>)',
+            re.DOTALL,
+        )
+        tei_match = tei_script_pattern.search(html)
+        if tei_match:
+            try:
+                existing_tei = json.loads(tei_match.group(2))
+            except json.JSONDecodeError:
+                existing_tei = {"fullBook": None, "pages": {}}
+
+            # Merge page TEI entries
+            if "pages" not in existing_tei:
+                existing_tei["pages"] = {}
+            existing_tei["pages"].update(new_tei_data.get("pages", {}))
+
+            # Update full book TEI (combine old body + new pages)
+            if new_tei_data.get("fullBook"):
+                existing_tei["fullBook"] = new_tei_data["fullBook"]
+
+            new_tei_json = json.dumps(existing_tei, ensure_ascii=False)
+            replacement = tei_match.group(1) + new_tei_json + tei_match.group(3)
+            html = html[:tei_match.start()] + replacement + html[tei_match.end():]
+            logger.info("Merged TEI data: %d pages.", len(existing_tei["pages"]))
+        else:
+            logger.warning("TEI data script block not found in V1 HTML.")
+
+    # 7. Inject CSS fixes for wide tables and content overflow
+    css_fixes = """
+<style>
+/* Fix: wide tables should scroll horizontally, not clip */
+.table-wrapper { overflow-x: auto !important; overflow-y: hidden; }
+/* Fix: transcription pane must contain overflow */
+.transcription-pane { overflow-x: hidden; }
+.transcription-body { overflow-wrap: break-word; word-wrap: break-word; }
+/* Fix: content paragraphs should not exceed pane width */
+.content-paragraph { overflow-wrap: break-word; word-wrap: break-word; max-width: 100%; }
+</style>
+"""
+    # Inject before </head>
+    html = _find_and_replace(html, "</head>", css_fixes + "</head>")
+    logger.info("Injected CSS fixes for table/content overflow.")
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -112,9 +112,14 @@ def _render_table(table_dict: dict) -> str:
         rows.append(f"<tr>{cells}</tr>")
     caption = table_dict.get("caption", "")
     cap_html = f'<div class="table-caption">{escape(caption)}</div>' if caption else ""
+    csv_btn = (
+        '<button class="csv-download-btn" onclick="downloadTableAsCSV(this)" '
+        'data-title-de="Als CSV herunterladen" data-title-en="Download as CSV">'
+        '\U0001f4e5 CSV</button>'
+    )
     return (
         f'<div class="table-wrapper">'
-        f'{cap_html}'
+        f'{csv_btn}{cap_html}'
         f'<table class="content-table">{"".join(rows)}</table>'
         f'</div>'
     )

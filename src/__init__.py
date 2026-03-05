@@ -12,6 +12,7 @@ from .html_generator import generate_html_edition
 from .geocoding import geocode_entities, build_page_map_data
 from .v1_renderer import render_v1_page
 from .v1_merger import merge_into_v1
+from .tei_generator import build_tei_data, generate_page_tei, generate_full_book_tei
 
 __all__ = [
     "Entity",
@@ -30,4 +31,7 @@ __all__ = [
     "build_page_map_data",
     "render_v1_page",
     "merge_into_v1",
+    "build_tei_data",
+    "generate_page_tei",
+    "generate_full_book_tei",
 ]

@@ -28,6 +28,7 @@ from src.models import PageResult
 from src.geocoding import geocode_entities, build_page_map_data
 from src.v1_renderer import render_v1_page
 from src.v1_merger import merge_into_v1
+from src.tei_generator import build_tei_data
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +57,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--images", default=None,
-        help="Folder containing facsimile images. Images are referenced via "
-             "relative or absolute path in the HTML.",
+        help="Folder containing facsimile images (on mounted Google Drive).",
     )
     parser.add_argument(
         "--image-prefix", default=None,
-        help="URL or path prefix for facsimile images (e.g. 'images/' or "
-             "'https://...'). If not set, computed from --images relative to --out.",
+        help="URL or path prefix for facsimile images (fallback when Drive "
+             "file IDs cannot be resolved).",
+    )
+    parser.add_argument(
+        "--image-manifest", default=None,
+        help="Path to a JSON file mapping image filename → Drive file ID. "
+             "If provided, skips Drive file ID resolution.",
     )
     parser.add_argument(
         "--start-page", type=int, default=None,
@@ -79,6 +84,10 @@ def main() -> None:
     parser.add_argument(
         "--skip-geocoding", action="store_true",
         help="Skip geocoding entirely (no maps will be generated).",
+    )
+    parser.add_argument(
+        "--skip-tei", action="store_true",
+        help="Skip TEI XML generation for new pages.",
     )
     args = parser.parse_args()
 
@@ -111,28 +120,54 @@ def main() -> None:
         print("No pages to merge.")
         sys.exit(0)
 
-    # --- Build image filename → path mapping ---
-    image_map: dict[str, str] = {}
-    if args.images:
+    # --- Resolve image file IDs ---
+    drive_file_ids: dict[str, str] = {}  # filename → Drive file ID
+    image_map: dict[str, str] = {}       # filename → path/URL fallback
+
+    if args.image_manifest:
+        # Load pre-built manifest
+        manifest_path = Path(args.image_manifest)
+        if manifest_path.exists():
+            with open(manifest_path, "r", encoding="utf-8") as fh:
+                drive_file_ids = json.load(fh)
+            logger.info("Loaded image manifest: %d entries.", len(drive_file_ids))
+
+    if not drive_file_ids and args.images:
+        # Try to resolve Drive file IDs automatically (Colab only)
+        try:
+            from src.drive_utils import get_drive_file_ids, save_image_manifest
+            drive_file_ids = get_drive_file_ids(args.images)
+            if drive_file_ids and args.image_manifest:
+                save_image_manifest(drive_file_ids, args.image_manifest)
+        except Exception as exc:
+            logger.info("Drive file ID resolution not available: %s", exc)
+
+    if not drive_file_ids and args.images:
+        # Fallback: use path-based image references
         image_folder = Path(args.images)
         out_path = Path(args.out) if args.out else Path(args.v1).parent / "digital_edition_complete.html"
 
         if args.image_prefix:
             prefix = args.image_prefix.rstrip("/")
         else:
-            # Compute relative path from output HTML to image folder
             try:
                 prefix = str(image_folder.resolve().relative_to(out_path.resolve().parent))
             except ValueError:
-                # Not relative — use absolute path
                 prefix = str(image_folder.resolve())
 
-        # Map each image filename to its full src path
         for img in image_folder.iterdir():
             if img.suffix.lower() in {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}:
                 image_map[img.name] = f"{prefix}/{img.name}"
+        logger.info("Mapped %d images with path prefix: %s", len(image_map), prefix)
 
-        logger.info("Mapped %d images with prefix: %s", len(image_map), prefix)
+    # Build page-number → file ID manifest for the merger
+    page_image_manifest: dict[str, str] = {}
+    if drive_file_ids:
+        for r in results:
+            fid = drive_file_ids.get(r.image_filename)
+            if fid:
+                page_image_manifest[str(r.page_number)] = fid
+        logger.info("Built page image manifest: %d entries.", len(page_image_manifest))
 
     # --- Geocoding ---
     geo_cache: dict[str, dict | None] = {}
@@ -146,7 +181,6 @@ def main() -> None:
             logger.info("Loaded geocode cache: %d entries.", len(geo_cache))
 
     if not args.skip_geocoding:
-        # Collect all Location entities across all pages
         all_entities = []
         for r in results:
             all_entities.extend(r.entities)
@@ -156,7 +190,6 @@ def main() -> None:
             all_entities, cache=geo_cache, delay=args.geocode_delay
         )
 
-        # Build per-page map data
         for r in results:
             md = build_page_map_data(r.page_number, r.entities, geo_cache)
             if md:
@@ -164,21 +197,30 @@ def main() -> None:
 
         logger.info("Map data generated for %d pages.", len(page_map_data))
 
-        # Save geocode cache
         if args.geocode_cache:
             with open(args.geocode_cache, "w", encoding="utf-8") as fh:
                 json.dump(geo_cache, fh, ensure_ascii=False, indent=2)
             logger.info("Saved geocode cache: %d entries.", len(geo_cache))
 
+    # --- TEI data ---
+    tei_data = None
+    if not args.skip_tei:
+        logger.info("Generating TEI data for %d pages…", len(results))
+        tei_data = build_tei_data(results)
+        logger.info("TEI generated: %d pages.", len(tei_data["pages"]))
+
     # --- Render page articles ---
     logger.info("Rendering %d V1-styled page articles…", len(results))
     articles: list[str] = []
     for r in results:
-        img_src = image_map.get(r.image_filename)
+        # Prefer Drive file ID; fall back to path-based image src
+        fid = drive_file_ids.get(r.image_filename)
+        img_src = image_map.get(r.image_filename) if not fid else None
         md = page_map_data.get(r.page_number)
         article = render_v1_page(
             result=r,
             map_data=md,
+            drive_file_id=fid,
             image_src=img_src,
         )
         articles.append(article)
@@ -188,6 +230,8 @@ def main() -> None:
         v1_html_path=args.v1,
         new_page_articles=articles,
         new_map_data=page_map_data if page_map_data else None,
+        new_image_manifest=page_image_manifest if page_image_manifest else None,
+        new_tei_data=tei_data,
         output_path=args.out,
     )
 
@@ -196,6 +240,10 @@ def main() -> None:
     print(f"Output: {output}")
     if page_map_data:
         print(f"Maps: {len(page_map_data)} pages with geocoded locations.")
+    if page_image_manifest:
+        print(f"Images: {len(page_image_manifest)} Drive file IDs resolved.")
+    elif image_map:
+        print(f"Images: {len(image_map)} path-based references (download images folder with HTML).")
 
 
 if __name__ == "__main__":
