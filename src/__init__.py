@@ -1,6 +1,13 @@
 """historical-digital-edition – LLM pipeline for historical German text."""
 from .models import Entity, Footnote, PageResult, PageStructure, TableData
-from .pipeline import process_book, process_page, load_results_from_json, merge_results
+from .pipeline import (
+    process_book,
+    process_page,
+    load_results_from_json,
+    merge_results,
+    find_incomplete_pages,
+    reprocess_pages,
+)
 from .html_generator import generate_html_edition
 from .geocoding import geocode_entities, build_page_map_data
 from .v1_renderer import render_v1_page
@@ -16,6 +23,8 @@ __all__ = [
     "process_page",
     "load_results_from_json",
     "merge_results",
+    "find_incomplete_pages",
+    "reprocess_pages",
     "generate_html_edition",
     "geocode_entities",
     "build_page_map_data",

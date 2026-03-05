@@ -25,7 +25,7 @@ except ImportError:
     pass
 
 from google import genai
-from src import config, process_book, generate_html_edition
+from src import config, process_book, generate_html_edition, find_incomplete_pages, reprocess_pages
 
 
 def main() -> None:
@@ -76,6 +76,18 @@ def main() -> None:
         "--title", default="Historische Digitalausgabe",
         help="Title shown in the HTML edition",
     )
+    parser.add_argument(
+        "--retry-incomplete", action="store_true",
+        help="Auto-detect and re-process pages with empty/minimal OCR output",
+    )
+    parser.add_argument(
+        "--pages", type=str, default=None,
+        help="Comma-separated page numbers to re-process (e.g. '551,563,580')",
+    )
+    parser.add_argument(
+        "--min-ocr-chars", type=int, default=50,
+        help="Minimum OCR characters to consider a page complete (default: 50)",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("GEMINI_API_KEY") or config.GEMINI_API_KEY
@@ -86,16 +98,50 @@ def main() -> None:
     client = genai.Client(api_key=api_key)
     print(f"✅  Gemini client ready – model: {args.model}")
 
-    results = process_book(
-        client=client,
-        image_folder=args.images,
-        output_folder=args.out,
-        entity_types=config.ENTITY_TYPES,
-        model_id=args.model,
-        thinking_level=args.thinking,
-        start_page=args.start,
-        end_page=args.end,
-    )
+    # Determine which pages to (re-)process
+    page_numbers: list[int] | None = None
+
+    if args.retry_incomplete:
+        json_folder = Path(args.out) / "json"
+        if not json_folder.is_dir():
+            print(f"❌  No json/ folder found at {json_folder}. Run the full pipeline first.")
+            sys.exit(1)
+        page_numbers = find_incomplete_pages(json_folder, min_ocr_chars=args.min_ocr_chars)
+        if not page_numbers:
+            print("✅  All existing pages look complete – nothing to retry.")
+            sys.exit(0)
+        print(f"🔄  Found {len(page_numbers)} incomplete pages: {page_numbers}")
+
+    if args.pages:
+        explicit = [int(p.strip()) for p in args.pages.split(",") if p.strip()]
+        if page_numbers is not None:
+            # Combine with auto-detected incomplete pages
+            page_numbers = sorted(set(page_numbers) | set(explicit))
+        else:
+            page_numbers = sorted(explicit)
+        print(f"🔄  Will re-process pages: {page_numbers}")
+
+    if page_numbers is not None:
+        results = reprocess_pages(
+            client=client,
+            image_folder=args.images,
+            output_folder=args.out,
+            entity_types=config.ENTITY_TYPES,
+            page_numbers=page_numbers,
+            model_id=args.model,
+            thinking_level=args.thinking,
+        )
+    else:
+        results = process_book(
+            client=client,
+            image_folder=args.images,
+            output_folder=args.out,
+            entity_types=config.ENTITY_TYPES,
+            model_id=args.model,
+            thinking_level=args.thinking,
+            start_page=args.start,
+            end_page=args.end,
+        )
 
     if results:
         html_path = generate_html_edition(
