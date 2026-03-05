@@ -129,6 +129,7 @@ def render_v1_page(
     result: PageResult,
     map_data: Optional[Dict] = None,
     drive_file_id: Optional[str] = None,
+    image_src: Optional[str] = None,
 ) -> str:
     """
     Render a single :class:`PageResult` as a V1-compatible
@@ -140,6 +141,8 @@ def render_v1_page(
                        or *None* if no geocoded locations.
         drive_file_id: Google Drive file ID for the facsimile image, or
                        *None* for a "missing" placeholder.
+        image_src:     Direct image URL/path for the facsimile. Takes
+                       precedence over *drive_file_id* when set.
 
     Returns:
         HTML string for the page article.
@@ -250,14 +253,20 @@ def render_v1_page(
     running_header = f'<div class="running-header">{header_text}</div>'
 
     # --- Facsimile pane ---
-    if drive_file_id:
+    has_image = image_src or drive_file_id
+    if has_image:
+        # Direct src (image_src) takes precedence; Drive images use
+        # lazy-loading via imageManifest JS (src="" initially).
+        img_url = escape(image_src, quote=True) if image_src else ""
+        loaded = "true" if image_src else "false"
+        opacity = "1" if image_src else "0"
         facs_inner = (
             f'<div class="facsimile-container">'
             f'<div class="facsimile-label">'
             f'{_bilingual("ORIGINALFAKSIMILE", "ORIGINAL FACSIMILE")}</div>'
             f'<div class="facsimile-viewer" onclick="this.classList.toggle(\'zoomed\')">'
-            f'<img alt="Seite {pn}" data-loaded="false" id="facsimile-img-{pn}" '
-            f'src="" style="opacity:0; transition: opacity 0.5s;"/>'
+            f'<img alt="Seite {pn}" data-loaded="{loaded}" id="facsimile-img-{pn}" '
+            f'src="{img_url}" style="opacity:{opacity}; transition: opacity 0.5s;"/>'
             f'</div>'
             f'<div class="zoom-hint">'
             f'{_bilingual("Klicken zum Vergrößern", "Click to zoom")}</div>'
