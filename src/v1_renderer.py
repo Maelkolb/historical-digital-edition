@@ -219,10 +219,10 @@ def render_v1_page(
 
         if btype == "heading":
             body_parts.append(
-                f'<h3 class="content-heading">{escape(content)}</h3>'
+                f'<h3 class="content-heading">{escape(content or "")}</h3>'
             )
         elif btype == "paragraph":
-            annotated = _annotate_text(content, result.entities)
+            annotated = _annotate_text(content or "", result.entities)
             body_parts.append(f'<p class="content-paragraph">{annotated}</p>')
         elif btype == "table":
             body_parts.append(_render_table(content))
@@ -236,10 +236,10 @@ def render_v1_page(
     if result.structure.footnotes:
         fn_items = []
         for fn in result.structure.footnotes:
-            fn_text = _annotate_text(fn.text, result.entities)
+            fn_text = _annotate_text(fn.text or "", result.entities)
             fn_items.append(
                 f'<div class="footnote">'
-                f'<span class="fn-marker">{escape(fn.marker)}</span>'
+                f'<span class="fn-marker">{escape(fn.marker or "")}</span>'
                 f'<span class="fn-text">{fn_text}</span></div>'
             )
         fn_html = (
