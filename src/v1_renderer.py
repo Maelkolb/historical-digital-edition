@@ -7,7 +7,6 @@ bilingual DE/EN labels, Leaflet map containers, GBIF links, entity
 highlighting with CSS custom properties, and side-by-side facsimile.
 """
 
-import json
 import logging
 from html import escape
 from typing import Dict, List, Optional
@@ -81,22 +80,67 @@ def _entity_mark(text: str, entity_type: str, context: str) -> str:
     return mark
 
 
-def _annotate_text(text: str, entities: List[Entity]) -> str:
-    """Insert entity ``<mark>`` tags into *text*, skipping overlaps."""
+def _annotate_text_by_matching(text: str, entities: List[Entity]) -> str:
+    """
+    Insert entity ``<mark>`` tags into *text* by **finding each entity's
+    text within the block** via string search.  This is robust regardless
+    of whether the NER offsets are relative to the full ocr_text or
+    per-block — we simply locate the entity text in *text*.
+
+    For each entity, the first unused occurrence of ``entity.text`` in
+    *text* is highlighted.  Overlapping matches are skipped.
+    """
+    if not text:
+        return ""
     if not entities:
         return escape(text).replace("\n", "<br>")
 
-    sorted_ents = sorted(entities, key=lambda e: e.start_char)
+    # Deduplicate: same text+type only once, keep first occurrence
+    seen = set()
+    unique_entities: List[Entity] = []
+    for e in entities:
+        key = (e.text, e.entity_type)
+        if key not in seen and e.text:
+            seen.add(key)
+            unique_entities.append(e)
+
+    # Find all entity occurrences in text by string search
+    matches: List[tuple] = []  # (start, end, entity)
+    used_ranges: List[tuple] = []  # track consumed ranges
+
+    for ent in unique_entities:
+        # Find all occurrences of this entity text
+        search_start = 0
+        while True:
+            idx = text.find(ent.text, search_start)
+            if idx == -1:
+                break
+            end = idx + len(ent.text)
+            # Check this range isn't already taken
+            overlap = False
+            for us, ue in used_ranges:
+                if idx < ue and end > us:
+                    overlap = True
+                    break
+            if not overlap:
+                matches.append((idx, end, ent))
+                used_ranges.append((idx, end))
+                break  # only first occurrence per entity
+            search_start = idx + 1
+
+    # Sort matches by position
+    matches.sort(key=lambda m: m[0])
+
+    # Build annotated HTML
     parts: List[str] = []
     cursor = 0
-
-    for ent in sorted_ents:
-        if ent.start_char < cursor:
-            continue
-        if ent.start_char > cursor:
-            parts.append(escape(text[cursor:ent.start_char]).replace("\n", "<br>"))
+    for start, end, ent in matches:
+        if start < cursor:
+            continue  # skip overlaps
+        if start > cursor:
+            parts.append(escape(text[cursor:start]).replace("\n", "<br>"))
         parts.append(_entity_mark(ent.text, ent.entity_type, ent.context or ""))
-        cursor = ent.end_char
+        cursor = end
 
     if cursor < len(text):
         parts.append(escape(text[cursor:]).replace("\n", "<br>"))
@@ -112,9 +156,19 @@ def _render_table(table_dict: dict) -> str:
         rows.append(f"<tr>{cells}</tr>")
     caption = table_dict.get("caption", "")
     cap_html = f'<div class="table-caption">{escape(caption)}</div>' if caption else ""
+    # CSV button: matches V1 style exactly (float right, inline styles)
     csv_btn = (
-        '<button class="csv-download-btn" onclick="downloadTableAsCSV(this)" '
-        'data-title-de="Als CSV herunterladen" data-title-en="Download as CSV">'
+        '<button class="csv-download-btn" '
+        'data-title-de="Diese Tabelle als CSV speichern" '
+        'data-title-en="Save this table as CSV" '
+        'onclick="downloadTableAsCSV(this)" '
+        'style="float: right; margin: 5px; padding: 2px 8px; '
+        "font-family: var(--font-sans, sans-serif); font-size: 0.7rem; "
+        "background-color: var(--color-paper-dark, #f4f1e8); "
+        "color: var(--color-accent, #6b4423); "
+        "border: 1px solid var(--color-border, #d8d2c4); "
+        'border-radius: 4px; cursor: pointer; z-index: 10;" '
+        'title="Diese Tabelle als CSV speichern">'
         '\U0001f4e5 CSV</button>'
     )
     return (
@@ -123,91 +177,6 @@ def _render_table(table_dict: dict) -> str:
         f'<table class="content-table">{"".join(rows)}</table>'
         f'</div>'
     )
-
-def _build_block_ranges(result: PageResult) -> List[dict]:
-    """
-    Rebuild the character-offset mapping from ``ocr_text`` back to
-    individual content blocks and footnotes.
-
-    This mirrors ``pipeline._build_ocr_text`` which joins parts with
-    ``"\\n\\n"``.  Each entry records the start/end offset in ``ocr_text``
-    so we can map entity positions back to individual blocks.
-
-    Returns a list of dicts:
-        ``{"kind": "header"|"block"|"footnote", "index": int,
-           "start": int, "end": int}``
-    """
-    ranges: List[dict] = []
-    cursor = 0
-    sep = "\n\n"
-
-    # 1. Header (if present)
-    header = result.structure.header or ""
-    if header:
-        ranges.append({"kind": "header", "index": -1,
-                        "start": cursor, "end": cursor + len(header)})
-        cursor += len(header) + len(sep)
-
-    # 2. Content blocks
-    for i, block in enumerate(result.structure.content_blocks):
-        btype = block.get("block_type", "paragraph")
-        content = block.get("content", "")
-
-        if btype == "table":
-            # Tables are flattened: each non-empty cell is a separate part
-            if isinstance(content, dict):
-                for row in content.get("cells", []):
-                    for cell in row:
-                        if cell:
-                            cell_str = str(cell)
-                            # We don't annotate tables, but track offset
-                            cursor += len(cell_str) + len(sep)
-            continue  # tables don't get entity annotations in the renderer
-        elif isinstance(content, list):
-            # List items
-            for item in content:
-                cursor += len(item) + len(sep)
-            continue
-        elif isinstance(content, str) and content:
-            start = cursor
-            end = cursor + len(content)
-            ranges.append({"kind": "block", "index": i,
-                            "start": start, "end": end})
-            cursor = end + len(sep)
-
-    # 3. Footnotes
-    for fi, fn in enumerate(result.structure.footnotes):
-        fn_text = fn.text or ""
-        if fn_text:
-            start = cursor
-            end = cursor + len(fn_text)
-            ranges.append({"kind": "footnote", "index": fi,
-                            "start": start, "end": end})
-            cursor = end + len(sep)
-
-    return ranges
-
-
-def _entities_for_range(
-    entities: List[Entity],
-    range_start: int,
-    range_end: int,
-) -> List[Entity]:
-    """
-    Return entities that fall within [range_start, range_end) with
-    offsets adjusted to be relative to range_start.
-    """
-    result: List[Entity] = []
-    for e in entities:
-        if e.start_char >= range_start and e.end_char <= range_end:
-            result.append(Entity(
-                text=e.text,
-                entity_type=e.entity_type,
-                start_char=e.start_char - range_start,
-                end_char=e.end_char - range_start,
-                context=e.context,
-            ))
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -301,20 +270,9 @@ def render_v1_page(
             f'</div>'
         )
 
-    # --- Build entity offset mapping ---
-    block_ranges = _build_block_ranges(result)
-    # Index: block_index → range info for blocks
-    block_range_map: Dict[int, dict] = {}
-    fn_range_map: Dict[int, dict] = {}
-    for br in block_ranges:
-        if br["kind"] == "block":
-            block_range_map[br["index"]] = br
-        elif br["kind"] == "footnote":
-            fn_range_map[br["index"]] = br
-
     # --- Transcription body ---
     body_parts: List[str] = []
-    for i, block in enumerate(result.structure.content_blocks):
+    for block in result.structure.content_blocks:
         btype = block.get("block_type", "paragraph")
         content = block.get("content", "")
 
@@ -323,14 +281,9 @@ def render_v1_page(
                 f'<h3 class="content-heading">{escape(content or "")}</h3>'
             )
         elif btype == "paragraph":
-            br = block_range_map.get(i)
-            if br:
-                block_ents = _entities_for_range(
-                    result.entities, br["start"], br["end"]
-                )
-            else:
-                block_ents = []
-            annotated = _annotate_text(content or "", block_ents)
+            annotated = _annotate_text_by_matching(
+                content or "", result.entities
+            )
             body_parts.append(f'<p class="content-paragraph">{annotated}</p>')
         elif btype == "table":
             body_parts.append(_render_table(content))
@@ -343,15 +296,10 @@ def render_v1_page(
     fn_html = ""
     if result.structure.footnotes:
         fn_items = []
-        for fi, fn in enumerate(result.structure.footnotes):
-            br = fn_range_map.get(fi)
-            if br:
-                fn_ents = _entities_for_range(
-                    result.entities, br["start"], br["end"]
-                )
-            else:
-                fn_ents = []
-            fn_text = _annotate_text(fn.text or "", fn_ents)
+        for fn in result.structure.footnotes:
+            fn_text = _annotate_text_by_matching(
+                fn.text or "", result.entities
+            )
             fn_items.append(
                 f'<div class="footnote">'
                 f'<span class="fn-marker">{escape(fn.marker or "")}</span>'
