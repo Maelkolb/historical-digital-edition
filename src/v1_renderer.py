@@ -76,7 +76,14 @@ def _entity_mark(text: str, entity_type: str, context: str) -> str:
     # Add GBIF link for Animal / Plant
     if entity_type in GBIF_TYPES:
         gbif_url = f"https://www.gbif.org/species/search?q={quote_plus(text)}"
-        mark += f'<a class="gbif-link" href="{gbif_url}" target="_blank" rel="noopener">🔗</a>'
+        mark += (
+            f'<a class="gbif-link" '
+            f'data-title-de="Auf GBIF anzeigen" data-title-en="View on GBIF" '
+            f'href="{gbif_url}" '
+            f'style="margin-left: 4px; font-size: 0.85em; text-decoration: none; '
+            f'color: #4a7c59; vertical-align: super;" '
+            f'target="_blank" title="Auf GBIF anzeigen" rel="noopener noreferrer">🔗</a>'
+        )
     return mark
 
 
@@ -149,11 +156,14 @@ def _annotate_text_by_matching(text: str, entities: List[Entity]) -> str:
 
 
 def _render_table(table_dict: dict) -> str:
+    all_cells = table_dict.get("cells", [])
     rows: List[str] = []
-    for i, row in enumerate(table_dict.get("cells", [])):
+    for i, row in enumerate(all_cells):
         tag = "th" if i == 0 else "td"
         cells = "".join(f"<{tag}>{escape(str(c))}</{tag}>" for c in row)
         rows.append(f"<tr>{cells}</tr>")
+    num_rows = len(all_cells)
+    num_cols = max((len(r) for r in all_cells), default=0)
     caption = table_dict.get("caption", "")
     cap_html = f'<div class="table-caption">{escape(caption)}</div>' if caption else ""
     # CSV button: matches V1 style exactly (float right, inline styles)
@@ -174,7 +184,7 @@ def _render_table(table_dict: dict) -> str:
     return (
         f'<div class="table-wrapper">'
         f'{csv_btn}{cap_html}'
-        f'<table class="content-table">{"".join(rows)}</table>'
+        f'<table class="content-table" data-cols="{num_cols}" data-rows="{num_rows}">{"".join(rows)}</table>'
         f'</div>'
     )
 
@@ -230,12 +240,12 @@ def render_v1_page(
         )
 
     # Map toggle button
-    loc_count = etype_counts.get("Location", 0)
     map_btn = ""
-    if map_data and loc_count > 0:
+    if map_data and map_data.get("count", 0) > 0:
+        map_loc_count = map_data["count"]
         map_btn = (
             f'<button class="map-toggle-btn-v3" id="map-btn-{pn}" '
-            f'onclick="toggleMapV3({pn})" title="{loc_count} Orte auf dieser Seite">'
+            f'onclick="toggleMapV3({pn})" title="{map_loc_count} Orte auf dieser Seite">'
             f'{_bilingual("📍 Karte öffnen", "📍 Open Map")}</button>'
         )
 
@@ -263,9 +273,9 @@ def render_v1_page(
             f'<h4>{_bilingual(f"Seite {pn}", f"Page {pn}")}</h4>'
             f'<small>{_bilingual(f"{loc_total} Orte", f"{loc_total} Places")}</small>'
             f'</div>'
-            f'<button class="map-close-btn" onclick="closeMapV3({pn})" '
+            f'<button class="map-close-btn" '
             f'data-title-de="Karte schließen" data-title-en="Close map" '
-            f'title="Karte schließen">×</button>'
+            f'onclick="closeMapV3({pn})" title="Karte schließen">×</button>'
             f'<div class="embedded-map" id="map-{pn}"></div>'
             f'</div>'
         )
