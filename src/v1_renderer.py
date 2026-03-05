@@ -124,6 +124,91 @@ def _render_table(table_dict: dict) -> str:
         f'</div>'
     )
 
+def _build_block_ranges(result: PageResult) -> List[dict]:
+    """
+    Rebuild the character-offset mapping from ``ocr_text`` back to
+    individual content blocks and footnotes.
+
+    This mirrors ``pipeline._build_ocr_text`` which joins parts with
+    ``"\\n\\n"``.  Each entry records the start/end offset in ``ocr_text``
+    so we can map entity positions back to individual blocks.
+
+    Returns a list of dicts:
+        ``{"kind": "header"|"block"|"footnote", "index": int,
+           "start": int, "end": int}``
+    """
+    ranges: List[dict] = []
+    cursor = 0
+    sep = "\n\n"
+
+    # 1. Header (if present)
+    header = result.structure.header or ""
+    if header:
+        ranges.append({"kind": "header", "index": -1,
+                        "start": cursor, "end": cursor + len(header)})
+        cursor += len(header) + len(sep)
+
+    # 2. Content blocks
+    for i, block in enumerate(result.structure.content_blocks):
+        btype = block.get("block_type", "paragraph")
+        content = block.get("content", "")
+
+        if btype == "table":
+            # Tables are flattened: each non-empty cell is a separate part
+            if isinstance(content, dict):
+                for row in content.get("cells", []):
+                    for cell in row:
+                        if cell:
+                            cell_str = str(cell)
+                            # We don't annotate tables, but track offset
+                            cursor += len(cell_str) + len(sep)
+            continue  # tables don't get entity annotations in the renderer
+        elif isinstance(content, list):
+            # List items
+            for item in content:
+                cursor += len(item) + len(sep)
+            continue
+        elif isinstance(content, str) and content:
+            start = cursor
+            end = cursor + len(content)
+            ranges.append({"kind": "block", "index": i,
+                            "start": start, "end": end})
+            cursor = end + len(sep)
+
+    # 3. Footnotes
+    for fi, fn in enumerate(result.structure.footnotes):
+        fn_text = fn.text or ""
+        if fn_text:
+            start = cursor
+            end = cursor + len(fn_text)
+            ranges.append({"kind": "footnote", "index": fi,
+                            "start": start, "end": end})
+            cursor = end + len(sep)
+
+    return ranges
+
+
+def _entities_for_range(
+    entities: List[Entity],
+    range_start: int,
+    range_end: int,
+) -> List[Entity]:
+    """
+    Return entities that fall within [range_start, range_end) with
+    offsets adjusted to be relative to range_start.
+    """
+    result: List[Entity] = []
+    for e in entities:
+        if e.start_char >= range_start and e.end_char <= range_end:
+            result.append(Entity(
+                text=e.text,
+                entity_type=e.entity_type,
+                start_char=e.start_char - range_start,
+                end_char=e.end_char - range_start,
+                context=e.context,
+            ))
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Main page renderer
@@ -216,9 +301,20 @@ def render_v1_page(
             f'</div>'
         )
 
+    # --- Build entity offset mapping ---
+    block_ranges = _build_block_ranges(result)
+    # Index: block_index → range info for blocks
+    block_range_map: Dict[int, dict] = {}
+    fn_range_map: Dict[int, dict] = {}
+    for br in block_ranges:
+        if br["kind"] == "block":
+            block_range_map[br["index"]] = br
+        elif br["kind"] == "footnote":
+            fn_range_map[br["index"]] = br
+
     # --- Transcription body ---
     body_parts: List[str] = []
-    for block in result.structure.content_blocks:
+    for i, block in enumerate(result.structure.content_blocks):
         btype = block.get("block_type", "paragraph")
         content = block.get("content", "")
 
@@ -227,7 +323,14 @@ def render_v1_page(
                 f'<h3 class="content-heading">{escape(content or "")}</h3>'
             )
         elif btype == "paragraph":
-            annotated = _annotate_text(content or "", result.entities)
+            br = block_range_map.get(i)
+            if br:
+                block_ents = _entities_for_range(
+                    result.entities, br["start"], br["end"]
+                )
+            else:
+                block_ents = []
+            annotated = _annotate_text(content or "", block_ents)
             body_parts.append(f'<p class="content-paragraph">{annotated}</p>')
         elif btype == "table":
             body_parts.append(_render_table(content))
@@ -240,8 +343,15 @@ def render_v1_page(
     fn_html = ""
     if result.structure.footnotes:
         fn_items = []
-        for fn in result.structure.footnotes:
-            fn_text = _annotate_text(fn.text or "", result.entities)
+        for fi, fn in enumerate(result.structure.footnotes):
+            br = fn_range_map.get(fi)
+            if br:
+                fn_ents = _entities_for_range(
+                    result.entities, br["start"], br["end"]
+                )
+            else:
+                fn_ents = []
+            fn_text = _annotate_text(fn.text or "", fn_ents)
             fn_items.append(
                 f'<div class="footnote">'
                 f'<span class="fn-marker">{escape(fn.marker or "")}</span>'

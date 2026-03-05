@@ -205,21 +205,38 @@ def merge_into_v1(
         else:
             logger.warning("TEI data script block not found in V1 HTML.")
 
-    # 7. Inject CSS fixes for wide tables and content overflow
-    css_fixes = """
-<style>
-/* Fix: wide tables should scroll horizontally, not clip */
-.table-wrapper { overflow-x: auto !important; overflow-y: hidden; }
-/* Fix: transcription pane must contain overflow */
-.transcription-pane { overflow-x: hidden; }
-.transcription-body { overflow-wrap: break-word; word-wrap: break-word; }
-/* Fix: content paragraphs should not exceed pane width */
-.content-paragraph { overflow-wrap: break-word; word-wrap: break-word; max-width: 100%; }
+    # 7. Inject CSS fixes for wide tables, content overflow, and image loading
+    css_and_js_fixes = """
+<style id="merger-css-fixes">
+/* Fix: wide tables should scroll horizontally, not be clipped */
+.page-article .table-wrapper { overflow: auto !important; overflow-x: auto !important; }
+/* Fix: transcription pane must constrain its content */
+.page-article .transcription-pane { overflow-x: hidden !important; min-width: 0; }
+.page-article .transcription-body { overflow-wrap: break-word; word-wrap: break-word; min-width: 0; }
+/* Fix: grid children must respect their column boundaries */
+.page-article .page-content-grid { overflow: hidden; }
+.page-article .page-content-grid > * { min-width: 0; }
+/* Fix: paragraphs must wrap */
+.page-article .content-paragraph { overflow-wrap: break-word; word-wrap: break-word; }
+/* Fix: content tables should shrink to fit when possible */
+.page-article .content-table { table-layout: auto; font-size: 0.8rem; }
+.page-article .content-table th,
+.page-article .content-table td { padding: 0.3rem 0.5rem; white-space: nowrap; }
 </style>
+<script>
+// Fix: load facsimile images that have a src already set (path-based)
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.page-article img[id^="facsimile-img-"]').forEach(function(img) {
+        if (img.src && img.src !== window.location.href && img.dataset.loaded === 'true') {
+            img.style.opacity = '1';
+        }
+    });
+});
+</script>
 """
     # Inject before </head>
-    html = _find_and_replace(html, "</head>", css_fixes + "</head>")
-    logger.info("Injected CSS fixes for table/content overflow.")
+    html = _find_and_replace(html, "</head>", css_and_js_fixes + "</head>")
+    logger.info("Injected CSS/JS fixes.")
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
