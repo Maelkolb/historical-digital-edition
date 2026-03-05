@@ -63,6 +63,17 @@ def _merge_js_object(html: str, var_pattern: str, new_entries: Dict) -> str:
     return html[:match.start()] + replacement + html[match.end():]
 
 
+def _escape_for_script(text: str) -> str:
+    """
+    Escape text for safe embedding inside a ``<script>`` tag.
+
+    The HTML parser looks for ``</script`` (case-insensitive) to close
+    the script block.  Any ``</`` sequence in JSON strings can
+    potentially confuse the parser, so escape ``</`` → ``<\\/``.
+    """
+    return text.replace("</", "<\\/")
+
+
 def merge_into_v1(
     v1_html_path: str | Path,
     new_page_articles: List[str],
@@ -108,17 +119,13 @@ def merge_into_v1(
     logger.info("Inserted %d new page articles.", len(new_page_articles))
 
     # 2. Add new page options to the <select> page selector
-    #    Find the closing </select> in the nav bar and insert before it
     new_options = ""
     for article in new_page_articles:
-        # Extract page number from data-page="N"
         m = re.search(r'data-page="(\d+)"', article)
         if m:
             pn = m.group(1)
             new_options += f'<option value="{pn}">Seite {pn}</option>'
 
-    select_close = "</select>"
-    # Find the page selector specifically (there may be other selects)
     selector_pattern = r'(<select[^>]*id="pageSelector"[^>]*>)(.*?)(</select>)'
     selector_match = re.search(selector_pattern, html, re.DOTALL)
     if selector_match:
@@ -145,11 +152,9 @@ def merge_into_v1(
         logger.info("Merged %d image manifest entries.", len(new_image_manifest))
 
     # 5. Update sidebar stats (page count and annotation count)
-    # Count total pages and entities from the merged HTML
     total_pages = len(re.findall(r'class="page-article"', html))
     total_entities = len(re.findall(r'class="entity"', html))
 
-    # Update page count
     page_stat_pattern = (
         r'(<span class="label"><span class="bilingual-de">Seiten</span>'
         r'<span class="bilingual-en">Pages</span></span>\s*'
@@ -162,7 +167,6 @@ def merge_into_v1(
         count=1,
     )
 
-    # Update annotation count
     annot_stat_pattern = (
         r'(<span class="label"><span class="bilingual-de">Annotationen</span>'
         r'<span class="bilingual-en">Annotations</span></span>\s*'
@@ -177,6 +181,7 @@ def merge_into_v1(
     logger.info("Updated sidebar stats: %d pages, %d entities.", total_pages, total_entities)
 
     # 6. Merge TEI data into the embedded <script id="tei-xml-data"> block
+    #    CRITICAL: escape </ sequences to prevent breaking the HTML parser
     if new_tei_data:
         tei_script_pattern = re.compile(
             r'(<script\s+id="tei-xml-data"\s+type="application/json">)(.*?)(</script>)',
@@ -185,58 +190,37 @@ def merge_into_v1(
         tei_match = tei_script_pattern.search(html)
         if tei_match:
             try:
-                existing_tei = json.loads(tei_match.group(2))
+                existing_tei = json.loads(
+                    tei_match.group(2).replace("<\\/", "</")
+                )
             except json.JSONDecodeError:
                 existing_tei = {"fullBook": None, "pages": {}}
 
-            # Merge page TEI entries
+            # Merge only page-level TEI (not fullBook to avoid bloat)
             if "pages" not in existing_tei:
                 existing_tei["pages"] = {}
             existing_tei["pages"].update(new_tei_data.get("pages", {}))
 
-            # Update full book TEI (combine old body + new pages)
-            if new_tei_data.get("fullBook"):
-                existing_tei["fullBook"] = new_tei_data["fullBook"]
-
+            # Serialize and escape for safe <script> embedding
             new_tei_json = json.dumps(existing_tei, ensure_ascii=False)
-            replacement = tei_match.group(1) + new_tei_json + tei_match.group(3)
+            safe_json = _escape_for_script(new_tei_json)
+            replacement = tei_match.group(1) + safe_json + tei_match.group(3)
             html = html[:tei_match.start()] + replacement + html[tei_match.end():]
             logger.info("Merged TEI data: %d pages.", len(existing_tei["pages"]))
         else:
             logger.warning("TEI data script block not found in V1 HTML.")
 
-    # 7. Inject CSS fixes for wide tables, content overflow, and image loading
-    css_and_js_fixes = """
-<style id="merger-css-fixes">
-/* Fix: wide tables should scroll horizontally, not be clipped */
-.page-article .table-wrapper { overflow: auto !important; overflow-x: auto !important; }
-/* Fix: transcription pane must constrain its content */
-.page-article .transcription-pane { overflow-x: hidden !important; min-width: 0; }
-.page-article .transcription-body { overflow-wrap: break-word; word-wrap: break-word; min-width: 0; }
-/* Fix: grid children must respect their column boundaries */
-.page-article .page-content-grid { overflow: hidden; }
-.page-article .page-content-grid > * { min-width: 0; }
-/* Fix: paragraphs must wrap */
-.page-article .content-paragraph { overflow-wrap: break-word; word-wrap: break-word; }
-/* Fix: content tables should shrink to fit when possible */
-.page-article .content-table { table-layout: auto; font-size: 0.8rem; }
-.page-article .content-table th,
-.page-article .content-table td { padding: 0.3rem 0.5rem; white-space: nowrap; }
-</style>
-<script>
-// Fix: load facsimile images that have a src already set (path-based)
-document.addEventListener('DOMContentLoaded', function() {
-    document.querySelectorAll('.page-article img[id^="facsimile-img-"]').forEach(function(img) {
-        if (img.src && img.src !== window.location.href && img.dataset.loaded === 'true') {
-            img.style.opacity = '1';
-        }
-    });
-});
-</script>
-"""
-    # Inject before </head>
-    html = _find_and_replace(html, "</head>", css_and_js_fixes + "</head>")
-    logger.info("Injected CSS/JS fixes.")
+    # 7. Inject CSS overrides for table overflow (before </head>)
+    css_fix = (
+        '<style id="merger-fixes">'
+        '.table-wrapper{overflow-x:auto!important;overflow-y:hidden}'
+        '.transcription-pane{min-width:0}'
+        '.page-content-grid>*{min-width:0}'
+        '.content-paragraph{overflow-wrap:break-word;word-wrap:break-word}'
+        '</style>'
+    )
+    html = _find_and_replace(html, "</head>", css_fix + "\n</head>")
+    logger.info("Injected CSS fixes.")
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
