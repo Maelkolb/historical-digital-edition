@@ -62,6 +62,47 @@ def load_results_from_json(source: str | Path) -> List[PageResult]:
     return results
 
 
+def find_incomplete_pages(
+    json_folder: str | Path,
+    min_ocr_chars: int = 50,
+) -> List[int]:
+    """
+    Scan existing page JSONs and return page numbers where processing
+    likely failed (empty OCR text, no content blocks, or very short text).
+
+    Args:
+        json_folder: Directory containing ``page_NNNN.json`` files.
+        min_ocr_chars: Minimum character count in ``ocr_text`` to consider
+                       a page successfully processed.
+
+    Returns:
+        Sorted list of page numbers that appear incomplete.
+    """
+    json_folder = Path(json_folder)
+    incomplete: List[int] = []
+    for jf in sorted(json_folder.glob("page_*.json")):
+        try:
+            with open(jf, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            ocr_text = data.get("ocr_text", "")
+            blocks = data.get("structure", {}).get("content_blocks", [])
+            if len(ocr_text) < min_ocr_chars or len(blocks) == 0:
+                page_num = data.get("page_number", 0)
+                logger.info(
+                    "Incomplete page %d (%s): %d chars, %d blocks",
+                    page_num, jf.name, len(ocr_text), len(blocks),
+                )
+                incomplete.append(page_num)
+        except (json.JSONDecodeError, KeyError) as exc:
+            # Corrupted JSON counts as incomplete
+            match = re.search(r"page_(\d+)\.json", jf.name)
+            page_num = int(match.group(1)) if match else 0
+            logger.warning("Corrupted JSON %s: %s", jf.name, exc)
+            incomplete.append(page_num)
+    logger.info("Found %d incomplete pages.", len(incomplete))
+    return sorted(incomplete)
+
+
 def merge_results(*result_lists: List[PageResult]) -> List[PageResult]:
     """
     Merge multiple lists of PageResult, keeping the latest version if a
@@ -271,3 +312,93 @@ def process_book(
         sum(len(r.entities) for r in results),
     )
     return results
+
+
+def reprocess_pages(
+    client: genai.Client,
+    image_folder: str | Path,
+    output_folder: str | Path,
+    entity_types: dict,
+    page_numbers: List[int],
+    model_id: str,
+    thinking_level: str = "high",
+) -> List[PageResult]:
+    """
+    Re-process only the specified page numbers.
+
+    Finds the matching image for each page number, runs the pipeline,
+    overwrites the individual page JSON, and returns the new results.
+    The combined JSON and any existing good pages are preserved via
+    merge_results().
+
+    Args:
+        client:        Authenticated google.genai.Client instance.
+        image_folder:  Folder containing page images.
+        output_folder: Root output directory (json/ subdir expected).
+        entity_types:  Dict mapping entity type name → German definition.
+        page_numbers:  Page numbers to re-process.
+        model_id:      Gemini model identifier.
+        thinking_level: Gemini thinking level.
+
+    Returns:
+        Merged list of all PageResult objects (old good + newly processed).
+    """
+    image_folder = Path(image_folder)
+    output_folder = Path(output_folder)
+    json_folder = output_folder / "json"
+    json_folder.mkdir(parents=True, exist_ok=True)
+
+    # Build a mapping: page_number → image_path
+    page_to_image: Dict[int, Path] = {}
+    for img in get_image_files(image_folder):
+        pn = extract_page_number(img.name)
+        if pn:
+            page_to_image[pn] = img
+
+    # Check which pages we can actually find images for
+    target_pages = sorted(page_numbers)
+    missing = [p for p in target_pages if p not in page_to_image]
+    if missing:
+        logger.warning("No images found for page numbers: %s", missing)
+    target_pages = [p for p in target_pages if p in page_to_image]
+
+    if not target_pages:
+        logger.error("No pages to re-process.")
+        return load_results_from_json(json_folder)
+
+    logger.info("Re-processing %d pages: %s", len(target_pages), target_pages)
+
+    new_results: List[PageResult] = []
+    for page_num in tqdm(target_pages, desc="Retrying", unit="pg"):
+        image_path = page_to_image[page_num]
+        try:
+            result = process_page(
+                client, image_path, page_num, entity_types, model_id, thinking_level
+            )
+            new_results.append(result)
+
+            # Overwrite the individual page JSON
+            page_json = json_folder / f"page_{page_num:04d}.json"
+            with open(page_json, "w", encoding="utf-8") as fh:
+                json.dump(result.to_dict(), fh, ensure_ascii=False, indent=2)
+            logger.info("Re-processed page %d: %d chars, %d entities",
+                        page_num, len(result.ocr_text), len(result.entities))
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error re-processing page %d: %s", page_num, exc, exc_info=True)
+
+    # Merge with all existing results (new ones overwrite old)
+    old_results = load_results_from_json(json_folder)
+    merged = merge_results(old_results, new_results)
+
+    # Update combined JSON
+    combined_json = output_folder / "digital_edition_complete.json"
+    with open(combined_json, "w", encoding="utf-8") as fh:
+        json.dump([r.to_dict() for r in merged], fh, ensure_ascii=False, indent=2)
+    logger.info("Updated combined JSON: %s", combined_json)
+
+    logger.info(
+        "Re-processing done. Re-tried: %d | Succeeded: %d | Total pages: %d",
+        len(target_pages), len(new_results), len(merged),
+    )
+    return merged
