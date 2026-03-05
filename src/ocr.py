@@ -19,6 +19,55 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
+_JSON_DECODER = json.JSONDecoder()
+
+# ---------------------------------------------------------------------------
+# Robust JSON parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_json_robust(text: str) -> Any:
+    """
+    Parse JSON from an LLM response, tolerating common issues:
+    1. Markdown code fences (```json ... ```)
+    2. Extra trailing data after valid JSON (Extra data error)
+    3. Leading/trailing whitespace or explanation text
+    """
+    # Strip markdown code fences
+    text = re.sub(r"^```(?:json)?\n?", "", text.strip())
+    text = re.sub(r"\n?```$", "", text)
+
+    # Try strict parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try raw_decode: parses the first valid JSON value, ignoring trailing data
+    # Find the first '{' or '[' to skip any leading text
+    for i, ch in enumerate(text):
+        if ch in ('{', '['):
+            try:
+                result, _ = _JSON_DECODER.raw_decode(text, i)
+                logger.debug("Recovered JSON via raw_decode at position %d", i)
+                return result
+            except json.JSONDecodeError:
+                continue
+
+    # Last resort: extract the outermost {...} or [...] with a regex
+    for pattern in [r'\{[\s\S]*\}', r'\[[\s\S]*\]']:
+        m = re.search(pattern, text)
+        if m:
+            try:
+                result = json.loads(m.group())
+                logger.debug("Recovered JSON via regex extraction")
+                return result
+            except json.JSONDecodeError:
+                continue
+
+    raise json.JSONDecodeError("No valid JSON found in LLM response", text, 0)
+
+
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
@@ -101,39 +150,45 @@ def perform_ocr(
     image_data, mime_type = load_image_as_base64(image_path)
     image_bytes = base64.b64decode(image_data)
 
-    try:
-        response = client.models.generate_content(
-            model=model_id,
-            contents=[
-                types.Content(
-                    parts=[
-                        types.Part(text=OCR_PROMPT),
-                        types.Part(
-                            inline_data=types.Blob(
-                                mime_type=mime_type,
-                                data=image_bytes,
-                            )
-                        ),
-                    ]
-                )
-            ],
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
-                response_mime_type="application/json",
-            ),
-        )
+    max_attempts = 2
+    result: Dict[str, Any] = {}
 
-        text = response.text.strip()
-        text = re.sub(r"^```(?:json)?\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
-        result = json.loads(text)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.models.generate_content(
+                model=model_id,
+                contents=[
+                    types.Content(
+                        parts=[
+                            types.Part(text=OCR_PROMPT),
+                            types.Part(
+                                inline_data=types.Blob(
+                                    mime_type=mime_type,
+                                    data=image_bytes,
+                                )
+                            ),
+                        ]
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+                    response_mime_type="application/json",
+                ),
+            )
 
-    except json.JSONDecodeError as exc:
-        logger.error("JSON parse error during OCR: %s", exc)
-        result = {}
-    except Exception as exc:  # noqa: BLE001
-        logger.error("OCR error: %s", exc)
-        result = {}
+            result = _parse_json_robust(response.text)
+            break  # success
+
+        except json.JSONDecodeError as exc:
+            logger.error("JSON parse error during OCR (attempt %d/%d): %s",
+                         attempt, max_attempts, exc)
+            if attempt < max_attempts:
+                logger.info("Retrying OCR…")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("OCR error (attempt %d/%d): %s",
+                         attempt, max_attempts, exc)
+            if attempt < max_attempts:
+                logger.info("Retrying OCR…")
 
     # Ensure required keys with sane defaults
     defaults: Dict[str, Any] = {

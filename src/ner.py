@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 
 from .models import Entity
+from .ocr import _parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -107,27 +108,33 @@ def perform_ner(
         text=text,
     )
 
-    try:
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
-                response_mime_type="application/json",
-            ),
-        )
+    max_attempts = 2
+    data = []
 
-        raw = response.text.strip()
-        raw = re.sub(r"^```(?:json)?\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
-        data = json.loads(raw)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.models.generate_content(
+                model=model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+                    response_mime_type="application/json",
+                ),
+            )
 
-    except json.JSONDecodeError as exc:
-        logger.error("JSON parse error during NER: %s", exc)
-        return []
-    except Exception as exc:  # noqa: BLE001
-        logger.error("NER error: %s", exc)
-        return []
+            data = _parse_json_robust(response.text)
+            break  # success
+
+        except json.JSONDecodeError as exc:
+            logger.error("JSON parse error during NER (attempt %d/%d): %s",
+                         attempt, max_attempts, exc)
+            if attempt < max_attempts:
+                logger.info("Retrying NER…")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("NER error (attempt %d/%d): %s",
+                         attempt, max_attempts, exc)
+            if attempt < max_attempts:
+                logger.info("Retrying NER…")
 
     entities: List[Entity] = []
     valid_types = set(entity_types.keys())
