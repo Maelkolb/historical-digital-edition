@@ -1,7 +1,7 @@
 """
 Central configuration for the Historical Digital Edition pipeline.
 
-Copy .env.example → .env and set GEMINI_API_KEY, then adjust the
+Copy .env.example -> .env and set GEMINI_API_KEY, then adjust the
 constants below to match your project.
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
 MODEL_ID: str = "gemini-3-flash-preview"   # update as needed
-THINKING_LEVEL: str = "low"                        # "none" | "low" | "medium" | "high"
+THINKING_LEVEL: str = "low"                # "none" | "low" | "medium" | "high"
 
 # ---------------------------------------------------------------------------
 # Paths  (override via environment variables or edit here)
@@ -28,16 +28,32 @@ OUTPUT_FOLDER: Path = Path(os.environ.get("OUTPUT_FOLDER", BASE_DIR / "output"))
 # IIIF downloader defaults
 # ---------------------------------------------------------------------------
 
-BOOK_ID: str = "bsb11005578"
-IIIF_MANIFEST_URL: str = (
-    f"https://api.digitale-sammlungen.de/iiif/presentation/v2/{BOOK_ID}/manifest"
-)
-DOWNLOAD_START_SEQ: int = 15   # first canvas to download (1-based, inclusive)
-DOWNLOAD_END_SEQ: int = 102    # last canvas to download (1-based, inclusive)
+IIIF_MANIFEST_URL: str = os.environ.get("IIIF_MANIFEST_URL", "")
+DOWNLOAD_START_SEQ: int = 1
+DOWNLOAD_END_SEQ: int | None = None  # None = download all
 DOWNLOAD_DELAY_SECONDS: float = 0.5
 
 # ---------------------------------------------------------------------------
-# Entity types  (German environmental / historical focus)
+# Region types recognised during detection
+# ---------------------------------------------------------------------------
+
+REGION_TYPES: list[str] = [
+    "heading",
+    "subheading",
+    "paragraph",
+    "table",
+    "footnote",
+    "date",
+    "image",
+    "caption",
+    "list",
+    "page_number",
+    "header",
+    "marginalia",
+]
+
+# ---------------------------------------------------------------------------
+# Entity types  (configurable per project)
 # ---------------------------------------------------------------------------
 
 ENTITY_TYPES: dict[str, str] = {
@@ -82,7 +98,7 @@ ENTITY_TYPES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Entity colours for the HTML viewer
+# Entity colours and labels for the HTML viewer
 # ---------------------------------------------------------------------------
 
 ENTITY_COLORS: dict[str, str] = {
@@ -111,4 +127,38 @@ ENTITY_LABELS: dict[str, str] = {
     "Plant":                "Pflanzen",
     "Resource":             "Ressourcen",
     "Climate":              "Klima",
+}
+
+# ---------------------------------------------------------------------------
+# Region type display config for HTML viewer
+# ---------------------------------------------------------------------------
+
+REGION_COLORS: dict[str, str] = {
+    "heading":     "#1a237e",
+    "subheading":  "#283593",
+    "paragraph":   "#37474f",
+    "table":       "#00695c",
+    "footnote":    "#4e342e",
+    "date":        "#ad1457",
+    "image":       "#6a1b9a",
+    "caption":     "#5d4037",
+    "list":        "#33691e",
+    "page_number": "#78909c",
+    "header":      "#546e7a",
+    "marginalia":  "#7b1fa2",
+}
+
+REGION_LABELS: dict[str, str] = {
+    "heading":     "Heading",
+    "subheading":  "Subheading",
+    "paragraph":   "Paragraph",
+    "table":       "Table",
+    "footnote":    "Footnote",
+    "date":        "Date",
+    "image":       "Image",
+    "caption":     "Caption",
+    "list":        "List",
+    "page_number": "Page No.",
+    "header":      "Header",
+    "marginalia":  "Marginalia",
 }

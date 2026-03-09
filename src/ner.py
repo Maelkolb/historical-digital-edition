@@ -1,20 +1,19 @@
 """
-NER Stage
-=========
-Performs Named Entity Recognition on the OCR text using a Gemini model.
-Returns a list of Entity objects with strict criteria for Person and Location.
+NER Stage (Step 3)
+==================
+Performs Named Entity Recognition on the combined text from all regions
+using a Gemini model.  Returns a list of Entity objects.
 """
 
 import json
 import logging
-import re
 from typing import List
 
 from google import genai
 from google.genai import types
 
 from .models import Entity
-from .ocr import _parse_json_robust
+from .json_utils import parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -82,15 +81,15 @@ def perform_ner(
     text: str,
     entity_types: dict[str, str],
     model_id: str,
-    thinking_level: str = "high",
+    thinking_level: str = "low",
 ) -> List[Entity]:
     """
     Run NER on plain text.
 
     Args:
         client:        Authenticated google.genai.Client instance.
-        text:          The OCR text to annotate.
-        entity_types:  Dict mapping entity type name → German definition.
+        text:          The combined text to annotate.
+        entity_types:  Dict mapping entity type name -> definition.
         model_id:      Gemini model identifier.
         thinking_level: "none" | "low" | "medium" | "high"
 
@@ -122,19 +121,15 @@ def perform_ner(
                 ),
             )
 
-            data = _parse_json_robust(response.text)
-            break  # success
+            data = parse_json_robust(response.text)
+            break
 
         except json.JSONDecodeError as exc:
             logger.error("JSON parse error during NER (attempt %d/%d): %s",
                          attempt, max_attempts, exc)
-            if attempt < max_attempts:
-                logger.info("Retrying NER…")
         except Exception as exc:  # noqa: BLE001
             logger.error("NER error (attempt %d/%d): %s",
                          attempt, max_attempts, exc)
-            if attempt < max_attempts:
-                logger.info("Retrying NER…")
 
     entities: List[Entity] = []
     valid_types = set(entity_types.keys())

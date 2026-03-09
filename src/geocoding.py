@@ -1,29 +1,26 @@
 """
-Geocoding Module
-================
+Geocoding (Step 4)
+==================
 Resolves Location entity names to geographic coordinates using the
-OpenStreetMap Nominatim API, and builds per-page map data structures
-compatible with the V1 Digital Edition's Leaflet integration.
+OpenStreetMap Nominatim API.
 """
 
 import logging
 import time
 from typing import Dict, List, Optional
-from urllib.parse import quote_plus
 
 import requests
 
-from .models import Entity
+from .models import Entity, GeoLocation
 
 logger = logging.getLogger(__name__)
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-USER_AGENT = "HistoricalDigitalEdition/1.0 (academic research)"
+USER_AGENT = "HistoricalDigitalEdition/2.0 (academic research)"
 
 
 def geocode_location(
     name: str,
-    delay: float = 1.0,
     session: Optional[requests.Session] = None,
 ) -> Optional[Dict]:
     """
@@ -62,19 +59,18 @@ def geocode_entities(
     entities: List[Entity],
     cache: Optional[Dict[str, Optional[Dict]]] = None,
     delay: float = 1.0,
-) -> Dict[str, Optional[Dict]]:
+) -> List[GeoLocation]:
     """
-    Geocode all *Location* entities, reusing *cache* for repeated names.
+    Geocode all Location entities, returning GeoLocation objects.
 
     Args:
-        entities: List of Entity objects (only ``entity_type == "Location"``
-                  will be queried).
-        cache:    Mutable dict mapping location name → geocode result (or
-                  *None* for failed lookups).  Updated in-place.
-        delay:    Seconds to wait between Nominatim requests.
+        entities: List of Entity objects (only Location types are queried).
+        cache:    Mutable dict mapping location name -> geocode result.
+                  Updated in-place for reuse across pages.
+        delay:    Seconds between Nominatim requests (rate limiting).
 
     Returns:
-        The (updated) cache dict.
+        List of GeoLocation objects for successfully geocoded locations.
     """
     if cache is None:
         cache = {}
@@ -86,66 +82,30 @@ def geocode_entities(
 
     new_queries = [n for n in location_names if n not in cache]
     if new_queries:
-        logger.info("Geocoding %d new location names…", len(new_queries))
+        logger.info("Geocoding %d new location names...", len(new_queries))
 
     for name in new_queries:
-        result = geocode_location(name, delay=delay, session=session)
+        result = geocode_location(name, session=session)
         cache[name] = result
         if result:
-            logger.debug("  %s → %.4f, %.4f", name, result["lat"], result["lon"])
+            logger.debug("  %s -> %.4f, %.4f", name, result["lat"], result["lon"])
         else:
-            logger.debug("  %s → not found", name)
+            logger.debug("  %s -> not found", name)
         time.sleep(delay)
 
-    return cache
-
-
-def build_page_map_data(
-    page_number: int,
-    entities: List[Entity],
-    cache: Dict[str, Optional[Dict]],
-) -> Optional[Dict]:
-    """
-    Build a V1-compatible map data entry for one page.
-
-    Returns a dict like::
-
-        {
-            "locations": [{"name": ..., "lat": ..., "lon": ..., "display": ...}, ...],
-            "center": [lat, lon],
-            "count": N,
-        }
-
-    or *None* if no locations could be geocoded.
-    """
-    locations = []
+    locations: List[GeoLocation] = []
     seen = set()
-
-    for e in entities:
-        if e.entity_type != "Location":
+    for name in location_names:
+        if name in seen:
             continue
-        if e.text in seen:
-            continue
-        seen.add(e.text)
+        seen.add(name)
+        geo = cache.get(name)
+        if geo:
+            locations.append(GeoLocation(
+                name=name,
+                lat=geo["lat"],
+                lon=geo["lon"],
+                display_name=geo["display_name"],
+            ))
 
-        geo = cache.get(e.text)
-        if geo is None:
-            continue
-        locations.append({
-            "name": e.text,
-            "lat": geo["lat"],
-            "lon": geo["lon"],
-            "display": geo["display_name"],
-        })
-
-    if not locations:
-        return None
-
-    avg_lat = sum(loc["lat"] for loc in locations) / len(locations)
-    avg_lon = sum(loc["lon"] for loc in locations) / len(locations)
-
-    return {
-        "locations": locations,
-        "center": [avg_lat, avg_lon],
-        "count": len(locations),
-    }
+    return locations
