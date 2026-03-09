@@ -3,6 +3,9 @@ NER Stage (Step 3)
 ==================
 Performs Named Entity Recognition on the combined text from all regions
 using a Gemini model.  Returns a list of Entity objects.
+
+Entity placement uses text matching (not character offsets) for robust
+rendering — LLMs are unreliable at exact character counting.
 """
 
 import json
@@ -47,8 +50,7 @@ WICHTIGE ANWEISUNGEN – BITTE GENAU BEACHTEN:
 
 3. ALLGEMEINE REGELN:
    - Annotiere nur EINDEUTIGE Entitäten.
-   - Gib die EXAKTE Zeichenposition (start_char, end_char) im Text an.
-   - Der extrahierte Text muss EXAKT mit dem Originaltext übereinstimmen.
+   - Der "text"-Wert muss EXAKT mit dem Originaltext übereinstimmen (Groß-/Kleinschreibung beachten).
    - Bei überlappenden Entitäten: wähle die spezifischere Kategorie.
 
 TEXT ZUR ANALYSE:
@@ -61,9 +63,7 @@ Antworte NUR mit einem JSON-Array (kein Markdown, kein Kommentar):
     {{
         "text": "exakter Text der Entität",
         "entity_type": "Kategorie aus der Liste oben",
-        "start_char": 0,
-        "end_char": 10,
-        "context": "...kurzer Kontext..."
+        "context": "...kurzer Satz in dem die Entität vorkommt..."
     }}
 ]
 
@@ -86,15 +86,9 @@ def perform_ner(
     """
     Run NER on plain text.
 
-    Args:
-        client:        Authenticated google.genai.Client instance.
-        text:          The combined text to annotate.
-        entity_types:  Dict mapping entity type name -> definition.
-        model_id:      Gemini model identifier.
-        thinking_level: "none" | "low" | "medium" | "high"
-
-    Returns:
-        List of Entity objects sorted by start_char.
+    Returns Entity objects.  The start_char / end_char fields are set to -1
+    because the renderer uses text matching rather than offsets (LLMs are
+    unreliable at character counting).
     """
     if not text.strip():
         return []
@@ -133,26 +127,33 @@ def perform_ner(
 
     entities: List[Entity] = []
     valid_types = set(entity_types.keys())
+    seen_texts: set[tuple[str, str]] = set()
 
     for item in data:
         if not isinstance(item, dict):
             continue
         entity_type = item.get("entity_type", "")
+        entity_text = str(item.get("text", "")).strip()
         if entity_type not in valid_types:
             logger.debug("Skipping unknown entity type: %s", entity_type)
             continue
-        try:
-            entities.append(
-                Entity(
-                    text=str(item.get("text", "")),
-                    entity_type=entity_type,
-                    start_char=int(item.get("start_char", 0)),
-                    end_char=int(item.get("end_char", 0)),
-                    context=item.get("context"),
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            logger.warning("Skipping malformed entity %s: %s", item, exc)
+        if not entity_text:
+            continue
 
-    entities.sort(key=lambda e: e.start_char)
+        # Deduplicate: same text + type only once
+        key = (entity_text, entity_type)
+        if key in seen_texts:
+            continue
+        seen_texts.add(key)
+
+        entities.append(
+            Entity(
+                text=entity_text,
+                entity_type=entity_type,
+                start_char=-1,
+                end_char=-1,
+                context=item.get("context"),
+            )
+        )
+
     return entities
