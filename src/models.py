@@ -2,45 +2,56 @@
 Data structures for the Historical Digital Edition pipeline.
 """
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from enum import Enum
+
+
+class RegionType(str, Enum):
+    """Types of regions that can be detected on a page."""
+    HEADING = "heading"
+    SUBHEADING = "subheading"
+    PARAGRAPH = "paragraph"
+    TABLE = "table"
+    FOOTNOTE = "footnote"
+    DATE = "date"
+    IMAGE = "image"
+    CAPTION = "caption"
+    LIST = "list"
+    PAGE_NUMBER = "page_number"
+    HEADER = "header"
+    MARGINALIA = "marginalia"
 
 
 @dataclass
-class TableData:
-    """Represents table content extracted from a page."""
-    rows: int
-    cols: int
-    cells: List[List[str]]
-    caption: Optional[str] = None
+class Region:
+    """A detected region on a page with its type and reading order."""
+    region_type: str
+    region_index: int
+    content: str  # transcription for text regions, description for images
+    is_visual: bool = False  # True if region is an image/illustration (described, not transcribed)
+    table_data: Optional[Dict[str, Any]] = None  # rows, cols, cells for tables
 
     def to_dict(self) -> Dict:
-        return {
-            "rows": self.rows,
-            "cols": self.cols,
-            "cells": self.cells,
-            "caption": self.caption,
+        d = {
+            "region_type": self.region_type,
+            "region_index": self.region_index,
+            "content": self.content,
+            "is_visual": self.is_visual,
         }
+        if self.table_data is not None:
+            d["table_data"] = self.table_data
+        return d
 
-
-@dataclass
-class Footnote:
-    """Represents a footnote with its marker and text."""
-    marker: str
-    text: str
-
-
-@dataclass
-class PageStructure:
-    """
-    Represents a page's structural elements in their original reading order.
-    content_blocks is an interleaved list of paragraphs, headings, lists, and tables.
-    """
-    page_number_printed: Optional[str]
-    header: Optional[str]
-    content_blocks: List[Dict[str, Any]]  # ordered sequence of blocks
-    footnotes: List[Footnote]
+    @classmethod
+    def from_dict(cls, d: Dict) -> "Region":
+        return cls(
+            region_type=d["region_type"],
+            region_index=d["region_index"],
+            content=d.get("content", ""),
+            is_visual=d.get("is_visual", False),
+            table_data=d.get("table_data"),
+        )
 
 
 @dataclass
@@ -54,50 +65,41 @@ class Entity:
 
 
 @dataclass
+class GeoLocation:
+    """Geographic coordinates for a location entity."""
+    name: str
+    lat: float
+    lon: float
+    display_name: str
+
+
+@dataclass
 class PageResult:
     """Stores the complete processing result for a single page."""
     page_number: int
     image_filename: str
-    structure: PageStructure
-    ocr_text: str
+    regions: List[Region]
+    full_text: str  # combined text from all text regions for NER
     entities: List[Entity]
+    locations: List[GeoLocation]
     processing_timestamp: str
     model_used: str
 
     def to_dict(self) -> Dict:
-        """Convert to a JSON-serialisable dictionary."""
         return {
             "page_number": self.page_number,
             "image_filename": self.image_filename,
-            "structure": {
-                "page_number_printed": self.structure.page_number_printed,
-                "header": self.structure.header,
-                "content_blocks": self.structure.content_blocks,
-                "footnotes": [
-                    {"marker": fn.marker, "text": fn.text}
-                    for fn in self.structure.footnotes
-                ],
-            },
-            "ocr_text": self.ocr_text,
+            "regions": [r.to_dict() for r in self.regions],
+            "full_text": self.full_text,
             "entities": [asdict(e) for e in self.entities],
+            "locations": [asdict(loc) for loc in self.locations],
             "processing_timestamp": self.processing_timestamp,
             "model_used": self.model_used,
         }
 
     @classmethod
     def from_dict(cls, d: Dict) -> "PageResult":
-        """Reconstruct a PageResult from a dictionary (e.g. loaded from JSON)."""
-        struct = d["structure"]
-        footnotes = [
-            Footnote(marker=fn.get("marker", ""), text=fn.get("text", ""))
-            for fn in struct.get("footnotes", [])
-        ]
-        structure = PageStructure(
-            page_number_printed=struct.get("page_number_printed"),
-            header=struct.get("header"),
-            content_blocks=struct.get("content_blocks", []),
-            footnotes=footnotes,
-        )
+        regions = [Region.from_dict(r) for r in d.get("regions", [])]
         entities = [
             Entity(
                 text=e["text"],
@@ -108,12 +110,22 @@ class PageResult:
             )
             for e in d.get("entities", [])
         ]
+        locations = [
+            GeoLocation(
+                name=loc["name"],
+                lat=loc["lat"],
+                lon=loc["lon"],
+                display_name=loc["display_name"],
+            )
+            for loc in d.get("locations", [])
+        ]
         return cls(
             page_number=d["page_number"],
             image_filename=d["image_filename"],
-            structure=structure,
-            ocr_text=d.get("ocr_text", ""),
+            regions=regions,
+            full_text=d.get("full_text", ""),
             entities=entities,
+            locations=locations,
             processing_timestamp=d.get("processing_timestamp", ""),
             model_used=d.get("model_used", ""),
         )

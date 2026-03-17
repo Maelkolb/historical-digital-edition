@@ -6,7 +6,3 @@ requests>=2.31.0
 
 # Optional: load .env files automatically
 python-dotenv>=1.0.0
-
-# Notebook support (optional, only needed when running the .ipynb)
-ipykernel>=6.0.0
-ipywidgets>=8.0.0

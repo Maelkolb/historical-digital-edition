@@ -1,8 +1,15 @@
 """
 Processing Pipeline
 ===================
-Orchestrates the two-stage OCR → NER pipeline over a folder of page images
-and persists the results as JSON.
+Orchestrates the 5-step pipeline over a folder of page images:
+
+1. Region Detection   – identify regions on the page
+2. Transcription      – transcribe text / describe images per region
+3. Entity Annotation  – NER on combined text
+4. Georeferencing     – geocode Location entities
+5. Digital Edition    – generate HTML output
+
+Results are persisted as JSON after each page.
 """
 
 import json
@@ -16,105 +23,15 @@ from typing import Dict, List, Optional
 from tqdm import tqdm
 from google import genai
 
-from .models import Entity, Footnote, PageResult, PageStructure
-from .ocr import perform_ocr
+from .models import Entity, GeoLocation, Region, PageResult
+from .region_detection import detect_regions
+from .transcription import transcribe_regions
 from .ner import perform_ner
+from .geocoding import geocode_entities
 
 logger = logging.getLogger(__name__)
 
 VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-
-
-# ---------------------------------------------------------------------------
-# Loading previous results
-# ---------------------------------------------------------------------------
-
-
-def load_results_from_json(source: str | Path) -> List[PageResult]:
-    """
-    Load previously processed PageResult objects from JSON.
-
-    Args:
-        source: Either a combined JSON file (list of page dicts) or a
-                directory containing individual ``page_NNNN.json`` files.
-
-    Returns:
-        List of PageResult objects sorted by page number.
-    """
-    source = Path(source)
-    if source.is_file():
-        logger.info("Loading combined results from %s", source)
-        with open(source, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        results = [PageResult.from_dict(d) for d in data]
-    elif source.is_dir():
-        logger.info("Loading individual page JSONs from %s", source)
-        json_files = sorted(source.glob("page_*.json"))
-        results = []
-        for jf in json_files:
-            with open(jf, "r", encoding="utf-8") as fh:
-                results.append(PageResult.from_dict(json.load(fh)))
-    else:
-        raise FileNotFoundError(f"No file or directory at {source}")
-
-    results.sort(key=lambda r: r.page_number)
-    logger.info("Loaded %d previous page results.", len(results))
-    return results
-
-
-def find_incomplete_pages(
-    json_folder: str | Path,
-    min_ocr_chars: int = 50,
-) -> List[int]:
-    """
-    Scan existing page JSONs and return page numbers where processing
-    likely failed (empty OCR text, no content blocks, or very short text).
-
-    Args:
-        json_folder: Directory containing ``page_NNNN.json`` files.
-        min_ocr_chars: Minimum character count in ``ocr_text`` to consider
-                       a page successfully processed.
-
-    Returns:
-        Sorted list of page numbers that appear incomplete.
-    """
-    json_folder = Path(json_folder)
-    incomplete: List[int] = []
-    for jf in sorted(json_folder.glob("page_*.json")):
-        try:
-            with open(jf, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            ocr_text = data.get("ocr_text", "")
-            blocks = data.get("structure", {}).get("content_blocks", [])
-            if len(ocr_text) < min_ocr_chars or len(blocks) == 0:
-                page_num = data.get("page_number", 0)
-                logger.info(
-                    "Incomplete page %d (%s): %d chars, %d blocks",
-                    page_num, jf.name, len(ocr_text), len(blocks),
-                )
-                incomplete.append(page_num)
-        except (json.JSONDecodeError, KeyError) as exc:
-            # Corrupted JSON counts as incomplete
-            match = re.search(r"page_(\d+)\.json", jf.name)
-            page_num = int(match.group(1)) if match else 0
-            logger.warning("Corrupted JSON %s: %s", jf.name, exc)
-            incomplete.append(page_num)
-    logger.info("Found %d incomplete pages.", len(incomplete))
-    return sorted(incomplete)
-
-
-def merge_results(*result_lists: List[PageResult]) -> List[PageResult]:
-    """
-    Merge multiple lists of PageResult, keeping the latest version if a
-    page number appears more than once, then sort by page number.
-    """
-    by_page: Dict[int, PageResult] = {}
-    for result_list in result_lists:
-        for r in result_list:
-            by_page[r.page_number] = r  # later lists overwrite earlier
-    merged = sorted(by_page.values(), key=lambda r: r.page_number)
-    logger.info("Merged result: %d unique pages.", len(merged))
-    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -147,38 +64,44 @@ def extract_page_number(filename: str) -> int:
     return 0
 
 
-def _build_ocr_text(ocr_result: dict) -> str:
-    """Flatten content_blocks into a single string for NER."""
+def build_full_text(regions: List[Region]) -> str:
+    """Combine text from all non-visual regions into a single string for NER."""
     parts: List[str] = []
-    if ocr_result.get("header"):
-        parts.append(ocr_result["header"])
-    for block in ocr_result.get("content_blocks", []):
-        content = block.get("content", "")
-        block_type = block.get("block_type", "paragraph")
-        if block_type == "table":
-            for row in content.get("cells", []):
+    for region in regions:
+        if region.is_visual:
+            continue
+        if region.region_type == "table" and region.table_data:
+            for row in region.table_data.get("cells", []):
                 parts.extend(cell for cell in row if cell)
-        elif isinstance(content, list):
-            parts.extend(content)
-        elif isinstance(content, str):
-            parts.append(content)
-    for fn in ocr_result.get("footnotes", []):
-        parts.append(fn.get("text", ""))
+        elif region.content:
+            parts.append(region.content)
     return "\n\n".join(parts)
 
 
-def _build_page_structure(ocr_result: dict) -> PageStructure:
-    """Convert the raw OCR dict into a typed PageStructure."""
-    footnotes = [
-        Footnote(marker=fn.get("marker", ""), text=fn.get("text", ""))
-        for fn in ocr_result.get("footnotes", [])
-    ]
-    return PageStructure(
-        page_number_printed=ocr_result.get("page_number_printed"),
-        header=ocr_result.get("header"),
-        content_blocks=ocr_result.get("content_blocks", []),
-        footnotes=footnotes,
-    )
+def load_results_from_json(source: str | Path) -> List[PageResult]:
+    """
+    Load previously processed PageResult objects from JSON.
+
+    Args:
+        source: Either a combined JSON file or a directory of page_NNNN.json files.
+    """
+    source = Path(source)
+    if source.is_file():
+        with open(source, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        results = [PageResult.from_dict(d) for d in data]
+    elif source.is_dir():
+        json_files = sorted(source.glob("page_*.json"))
+        results = []
+        for jf in json_files:
+            with open(jf, "r", encoding="utf-8") as fh:
+                results.append(PageResult.from_dict(json.load(fh)))
+    else:
+        raise FileNotFoundError(f"No file or directory at {source}")
+
+    results.sort(key=lambda r: r.page_number)
+    logger.info("Loaded %d page results.", len(results))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -192,42 +115,44 @@ def process_page(
     page_number: int,
     entity_types: dict,
     model_id: str,
-    thinking_level: str = "high",
+    thinking_level: str = "low",
+    geo_cache: Optional[Dict] = None,
 ) -> PageResult:
     """
-    Run the full OCR → NER pipeline for one page.
-
-    Returns:
-        A populated PageResult object.
+    Run the full pipeline for one page:
+    1. Region Detection -> 2. Transcription -> 3. NER -> 4. Geocoding
     """
     image_path = Path(image_path)
     logger.info("Processing page %d: %s", page_number, image_path.name)
 
-    # Stage 1 – OCR
-    logger.info("  Stage 1: OCR…")
-    ocr_result = perform_ocr(client, image_path, model_id, thinking_level)
-    ocr_text = _build_ocr_text(ocr_result)
-    structure = _build_page_structure(ocr_result)
-    logger.info(
-        "  OCR complete: %d chars, %d blocks, %d footnotes",
-        len(ocr_text),
-        len(structure.content_blocks),
-        len(structure.footnotes),
-    )
+    # Step 1 – Region Detection
+    logger.info("  Step 1: Region detection...")
+    detected = detect_regions(client, image_path, model_id, thinking_level)
+    logger.info("  Detected %d regions", len(detected))
 
-    # Stage 2 – NER
-    logger.info("  Stage 2: NER…")
-    entities: List[Entity] = perform_ner(
-        client, ocr_text, entity_types, model_id, thinking_level
-    )
-    logger.info("  NER complete: %d entities", len(entities))
+    # Step 2 – Transcription / Description
+    logger.info("  Step 2: Transcription...")
+    regions = transcribe_regions(client, image_path, detected, model_id, thinking_level)
+    logger.info("  Transcribed %d regions", len(regions))
+
+    # Step 3 – NER
+    full_text = build_full_text(regions)
+    logger.info("  Step 3: NER on %d chars...", len(full_text))
+    entities = perform_ner(client, full_text, entity_types, model_id, thinking_level)
+    logger.info("  Found %d entities", len(entities))
+
+    # Step 4 – Geocoding
+    logger.info("  Step 4: Geocoding...")
+    locations = geocode_entities(entities, cache=geo_cache)
+    logger.info("  Geocoded %d locations", len(locations))
 
     return PageResult(
         page_number=page_number,
         image_filename=image_path.name,
-        structure=structure,
-        ocr_text=ocr_text,
+        regions=regions,
+        full_text=full_text,
         entities=entities,
+        locations=locations,
         processing_timestamp=datetime.now().isoformat(),
         model_used=model_id,
     )
@@ -244,22 +169,22 @@ def process_book(
     output_folder: str | Path,
     entity_types: dict,
     model_id: str,
-    thinking_level: str = "high",
+    thinking_level: str = "low",
     start_page: Optional[int] = None,
     end_page: Optional[int] = None,
 ) -> List[PageResult]:
     """
-    Process all pages in *image_folder* through the OCR → NER pipeline.
+    Process all pages in *image_folder* through the full pipeline.
 
     Args:
         client:        Authenticated google.genai.Client instance.
         image_folder:  Folder containing page images.
         output_folder: Root output directory (json/ subdir will be created).
-        entity_types:  Dict mapping entity type name → German definition.
+        entity_types:  Dict mapping entity type name -> definition.
         model_id:      Gemini model identifier.
         thinking_level: Gemini thinking level.
-        start_page:    0-based start index (inclusive). None = start from 0.
-        end_page:      0-based end index (exclusive). None = all pages.
+        start_page:    0-based start index (inclusive).
+        end_page:      0-based end index (exclusive).
 
     Returns:
         List of PageResult objects sorted by page number.
@@ -276,17 +201,18 @@ def process_book(
 
     logger.info("Found %d images in %s", len(image_files), image_folder)
 
-    # Apply slice
     subset = image_files[start_page:end_page]
-    logger.info("Processing %d pages (slice %s:%s)…", len(subset), start_page, end_page)
+    logger.info("Processing %d pages...", len(subset))
 
+    geo_cache: Dict = {}
     results: List[PageResult] = []
 
     for idx, image_path in enumerate(tqdm(subset, desc="Pages", unit="pg")):
         page_num = extract_page_number(image_path.name) or (idx + 1)
         try:
             result = process_page(
-                client, image_path, page_num, entity_types, model_id, thinking_level
+                client, image_path, page_num, entity_types,
+                model_id, thinking_level, geo_cache,
             )
             results.append(result)
 
@@ -306,99 +232,16 @@ def process_book(
         json.dump([r.to_dict() for r in results], fh, ensure_ascii=False, indent=2)
     logger.info("Combined JSON saved: %s", combined_json)
 
+    # Save geocode cache
+    if geo_cache:
+        cache_path = output_folder / "geocode_cache.json"
+        with open(cache_path, "w", encoding="utf-8") as fh:
+            json.dump(geo_cache, fh, ensure_ascii=False, indent=2)
+
     logger.info(
-        "Done. Pages: %d | Entities: %d",
+        "Done. Pages: %d | Entities: %d | Locations: %d",
         len(results),
         sum(len(r.entities) for r in results),
+        sum(len(r.locations) for r in results),
     )
     return results
-
-
-def reprocess_pages(
-    client: genai.Client,
-    image_folder: str | Path,
-    output_folder: str | Path,
-    entity_types: dict,
-    page_numbers: List[int],
-    model_id: str,
-    thinking_level: str = "high",
-) -> List[PageResult]:
-    """
-    Re-process only the specified page numbers.
-
-    Finds the matching image for each page number, runs the pipeline,
-    overwrites the individual page JSON, and returns the new results.
-    The combined JSON and any existing good pages are preserved via
-    merge_results().
-
-    Args:
-        client:        Authenticated google.genai.Client instance.
-        image_folder:  Folder containing page images.
-        output_folder: Root output directory (json/ subdir expected).
-        entity_types:  Dict mapping entity type name → German definition.
-        page_numbers:  Page numbers to re-process.
-        model_id:      Gemini model identifier.
-        thinking_level: Gemini thinking level.
-
-    Returns:
-        Merged list of all PageResult objects (old good + newly processed).
-    """
-    image_folder = Path(image_folder)
-    output_folder = Path(output_folder)
-    json_folder = output_folder / "json"
-    json_folder.mkdir(parents=True, exist_ok=True)
-
-    # Build a mapping: page_number → image_path
-    page_to_image: Dict[int, Path] = {}
-    for img in get_image_files(image_folder):
-        pn = extract_page_number(img.name)
-        if pn:
-            page_to_image[pn] = img
-
-    # Check which pages we can actually find images for
-    target_pages = sorted(page_numbers)
-    missing = [p for p in target_pages if p not in page_to_image]
-    if missing:
-        logger.warning("No images found for page numbers: %s", missing)
-    target_pages = [p for p in target_pages if p in page_to_image]
-
-    if not target_pages:
-        logger.error("No pages to re-process.")
-        return load_results_from_json(json_folder)
-
-    logger.info("Re-processing %d pages: %s", len(target_pages), target_pages)
-
-    new_results: List[PageResult] = []
-    for page_num in tqdm(target_pages, desc="Retrying", unit="pg"):
-        image_path = page_to_image[page_num]
-        try:
-            result = process_page(
-                client, image_path, page_num, entity_types, model_id, thinking_level
-            )
-            new_results.append(result)
-
-            # Overwrite the individual page JSON
-            page_json = json_folder / f"page_{page_num:04d}.json"
-            with open(page_json, "w", encoding="utf-8") as fh:
-                json.dump(result.to_dict(), fh, ensure_ascii=False, indent=2)
-            logger.info("Re-processed page %d: %d chars, %d entities",
-                        page_num, len(result.ocr_text), len(result.entities))
-
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Error re-processing page %d: %s", page_num, exc, exc_info=True)
-
-    # Merge with all existing results (new ones overwrite old)
-    old_results = load_results_from_json(json_folder)
-    merged = merge_results(old_results, new_results)
-
-    # Update combined JSON
-    combined_json = output_folder / "digital_edition_complete.json"
-    with open(combined_json, "w", encoding="utf-8") as fh:
-        json.dump([r.to_dict() for r in merged], fh, ensure_ascii=False, indent=2)
-    logger.info("Updated combined JSON: %s", combined_json)
-
-    logger.info(
-        "Re-processing done. Re-tried: %d | Succeeded: %d | Total pages: %d",
-        len(target_pages), len(new_results), len(merged),
-    )
-    return merged

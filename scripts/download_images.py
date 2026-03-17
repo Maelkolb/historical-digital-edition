@@ -3,7 +3,7 @@
 CLI: Download images from an IIIF manifest.
 
 Usage:
-    python scripts/download_images.py [--book-id BSB_ID] [--start 15] [--end 102] [--out images/]
+    python scripts/download_images.py --manifest <URL> [--start 1] [--end 50] [--out images/]
 """
 
 import argparse
@@ -11,7 +11,6 @@ import logging
 import sys
 from pathlib import Path
 
-# Allow running from repo root without installing
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.downloader import IIIFDownloader
@@ -25,12 +24,10 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    parser = argparse.ArgumentParser(description="Download IIIF images for a book.")
-    parser.add_argument("--book-id", default=config.BOOK_ID, help="BSB book identifier")
+    parser = argparse.ArgumentParser(description="Download IIIF images.")
     parser.add_argument(
-        "--manifest",
-        default=None,
-        help="Full manifest URL (overrides --book-id default)",
+        "--manifest", default=config.IIIF_MANIFEST_URL or None,
+        help="Full IIIF manifest URL",
     )
     parser.add_argument(
         "--start", type=int, default=config.DOWNLOAD_START_SEQ,
@@ -50,14 +47,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if not args.manifest:
+        print("Error: --manifest URL is required (or set IIIF_MANIFEST_URL in config).")
+        sys.exit(1)
+
     downloader = IIIFDownloader(
-        book_id=args.book_id,
+        book_id="download",
         output_dir=args.out,
         manifest_url=args.manifest,
         delay=args.delay,
     )
     downloaded = downloader.download(start_seq=args.start, end_seq=args.end)
-    print(f"\n✅  {len(downloaded)} images saved to {args.out}")
+    print(f"\n{len(downloaded)} images saved to {args.out}")
 
 
 if __name__ == "__main__":

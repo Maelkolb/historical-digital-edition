@@ -1,65 +1,66 @@
-# 📜 Historical Digital Edition Pipeline
+# Historical Digital Edition Pipeline
 
-An LLM-powered pipeline that transforms scanned historical German books into richly annotated interactive digital editions. It uses **Google Gemini** for two sequential tasks:
+A reproducible, generalized workflow for turning digital images of book/document pages into an interactive digital edition. Uses **Google Gemini** multimodal models for all AI-powered steps.
 
-1. **OCR** — transcribes Fraktur/historical script images into structured text while preserving the exact reading order of paragraphs, headings, lists, and tables.
-2. **NER** — annotates 11 environmental and historical entity types with strict criteria for accuracy.
+## Pipeline
 
-The final output is a single self-contained HTML file you can open in any browser — no server required.
+| Step | Module | Description |
+|------|--------|-------------|
+| 1. Region Detection | `region_detection.py` | Identifies distinct regions on each page (headings, paragraphs, tables, footnotes, images, dates, etc.) |
+| 2. Transcription | `transcription.py` | Transcribes text regions (including Fraktur), describes visual regions |
+| 3. Entity Annotation | `ner.py` | Named Entity Recognition on combined page text |
+| 4. Georeferencing | `geocoding.py` | Resolves Location entities to coordinates via Nominatim |
+| 5. Digital Edition | `html_generator.py` | Generates interactive HTML with region indicators, entity highlighting, maps |
 
----
+## Region Types
 
-## ✨ Features
+The pipeline detects and visually differentiates these region types:
 
-| Feature | Detail |
-|---|---|
-| Fraktur OCR | Handles old German script, ligatures, and historical orthography |
-| Structured extraction | Content blocks (paragraphs, headings, tables, lists) preserved in page order |
-| 11 entity types | Animals, Plants, Locations, Persons, Organisations, Resources, Climate, … |
-| Strict NER criteria | Separate rules for Person vs. group nouns, proper place names vs. generic terms |
-| Interactive HTML viewer | Entity filter legend, keyboard navigation, optional facsimile toggle |
-| IIIF downloader | Downloads images straight from any IIIF Presentation API v2 manifest |
-| CSV export | All entities exportable for further analysis in any tool |
-| Fully configurable | Swap model, entity types, colours, paths — all in one `config.py` |
+- **Heading** / **Subheading** - Section titles
+- **Paragraph** - Body text
+- **Table** - Tabular data (structured extraction)
+- **Footnote** - Footnote text with markers
+- **Date** - Standalone dates or date ranges
+- **Image** - Illustrations, figures, maps (described rather than transcribed)
+- **Caption** - Image/table captions
+- **List** - Enumerated or bulleted content
+- **Page Number** / **Header** - Page metadata
+- **Marginalia** - Marginal notes
 
----
-
-## 🗂 Repository Layout
+## Repository Layout
 
 ```
 historical-digital-edition/
 ├── src/
-│   ├── __init__.py          # Public API
-│   ├── config.py            # ← All settings live here
-│   ├── models.py            # Typed data structures
-│   ├── downloader.py        # IIIF image downloader
-│   ├── ocr.py               # Stage 1 – OCR with Gemini
-│   ├── ner.py               # Stage 2 – NER with Gemini
-│   ├── pipeline.py          # Orchestrates OCR → NER for a whole book
-│   └── html_generator.py    # Renders results to interactive HTML
+│   ├── __init__.py            # Public API
+│   ├── config.py              # All settings
+│   ├── models.py              # Data structures (Region, Entity, PageResult, etc.)
+│   ├── json_utils.py          # Robust JSON parsing for LLM responses
+│   ├── region_detection.py    # Step 1: detect regions via Gemini
+│   ├── transcription.py       # Step 2: transcribe/describe regions
+│   ├── ner.py                 # Step 3: entity annotation via Gemini
+│   ├── geocoding.py           # Step 4: geocode locations via Nominatim
+│   ├── html_generator.py      # Step 5: generate HTML digital edition
+│   ├── pipeline.py            # Orchestrates all steps
+│   └── downloader.py          # IIIF image downloader
 ├── scripts/
-│   ├── download_images.py   # CLI: download page images
-│   ├── process_book.py      # CLI: run full pipeline
-│   └── export_entities.py   # CLI: export entities to CSV
-├── notebooks/
-│   └── digital_edition_workflow.ipynb  # Interactive Colab/Jupyter walkthrough
-├── output/                  # Created at runtime – gitignored
-├── images/                  # Created at runtime – gitignored
+│   ├── process_book.py        # CLI: run full pipeline
+│   ├── download_images.py     # CLI: download page images
+│   └── export_entities.py     # CLI: export entities to CSV
+├── output/                    # Created at runtime (gitignored)
+├── images/                    # Created at runtime (gitignored)
 ├── requirements.txt
-├── .env.example
 └── .gitignore
 ```
 
----
+## Quick Start
 
-## 🚀 Quick Start
-
-### 1. Clone & install
+### 1. Install
 
 ```bash
-git clone https://github.com/your-org/historical-digital-edition.git
+git clone <repo-url>
 cd historical-digital-edition
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -67,31 +68,29 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env and paste your GEMINI_API_KEY from https://aistudio.google.com/
+# Edit .env and set GEMINI_API_KEY from https://aistudio.google.com/
 ```
 
-### 3. Download page images (IIIF)
+### 3. Download page images (optional, for IIIF sources)
 
 ```bash
-python scripts/download_images.py --book-id bsb11005578 --start 15 --end 102 --out images/
+python scripts/download_images.py --manifest <IIIF_MANIFEST_URL> --start 1 --end 50 --out images/
 ```
-
-This fetches images from the [Bayerische Staatsbibliothek MDZ](https://www.digitale-sammlungen.de/) IIIF manifest. Substitute your own `--book-id` or pass `--manifest <URL>` for any other IIIF v2 source.
 
 ### 4. Run the pipeline
 
 ```bash
-# Process all pages and generate HTML edition
+# Process all pages
 python scripts/process_book.py --images images/ --out output/
 
-# Process only the first 10 pages (good for testing)
-python scripts/process_book.py --images images/ --out output/ --end 10
+# Process a subset (good for testing)
+python scripts/process_book.py --images images/ --out output/ --end 5
 
-# Embed facsimile images directly in the HTML (larger file, fully self-contained)
+# Embed facsimile images in the HTML
 python scripts/process_book.py --images images/ --out output/ --embed-images
 ```
 
-Open `output/digital_edition.html` in your browser. Done.
+Open `output/digital_edition.html` in your browser.
 
 ### 5. Export entities to CSV
 
@@ -99,51 +98,23 @@ Open `output/digital_edition.html` in your browser. Done.
 python scripts/export_entities.py --json output/digital_edition_complete.json
 ```
 
----
+## Configuration
 
-## ⚙️ Configuration
-
-Everything is in **`src/config.py`**. Key settings:
+All settings are in `src/config.py`:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODEL_ID` | `gemini-2.5-flash-preview-04-17` | Gemini model to use |
-| `THINKING_LEVEL` | `"high"` | `"none"` / `"low"` / `"medium"` / `"high"` |
-| `IMAGE_FOLDER` | `./images` | Source images (overridable via `IMAGE_FOLDER` env var) |
-| `OUTPUT_FOLDER` | `./output` | Output directory (overridable via `OUTPUT_FOLDER` env var) |
-| `BOOK_ID` | `bsb11005578` | BSB book identifier for the IIIF downloader |
+| `MODEL_ID` | `gemini-3-flash-preview` | Gemini model to use |
+| `THINKING_LEVEL` | `"low"` | `"none"` / `"low"` / `"medium"` / `"high"` |
+| `IMAGE_FOLDER` | `./images` | Source images (env var override) |
+| `OUTPUT_FOLDER` | `./output` | Output directory (env var override) |
 | `ENTITY_TYPES` | 11 types | German definitions for each entity category |
-| `ENTITY_COLORS` | archival palette | Hex colours for the HTML legend |
+| `ENTITY_COLORS` | Archival palette | Hex colours for entity highlighting |
+| `REGION_COLORS` | Per-type colours | Hex colours for region type indicators |
 
-To add or rename entity types, edit `ENTITY_TYPES` and `ENTITY_COLORS` in `config.py` — no other file needs to change.
+To customize entity types, edit `ENTITY_TYPES`, `ENTITY_COLORS`, and `ENTITY_LABELS` in `config.py`.
 
----
-
-## 🏷 Entity Types
-
-| Type | German definition (excerpt) |
-|---|---|
-| **Animal** | Tier, Tiergruppe oder Tierart (Wolf, Forelle, Rinderherde) |
-| **Plant** | Pflanze/Pflanzenart (Eiche, Buche, Weizen) |
-| **Location** | Konkrete geographische Orte mit Eigennamen (Weimar, Thüringen) |
-| **Person** | Namentlich identifizierbare historische Persönlichkeiten (Kaiser Karl IV.) |
-| **Organisation** | Organisation/Institution (Universität Jena, Forstamt Saalfeld) |
-| **Natural Object** | Natürlich vorkommendes Objekt (Donau, Fichtelgebirge, Brocken) |
-| **Resource** | Natürliche Ressource (Holz, Erz, Kohle) |
-| **Environment** | Biotop/Habitat (Wald, Uferzone, Auenlandschaft) |
-| **Environmental Impact** | Umweltauswirkung (Überschwemmung, Erosion, Abholzung) |
-| **Climate** | Klimaphänomen (Frost, Dürre, Schneesturm) |
-| **Artefact** | Menschengemachtes Artefakt (Brücke, Mühle, Eisenbahn) |
-
----
-
-## 📓 Notebook
-
-`notebooks/digital_edition_workflow.ipynb` walks through the entire pipeline step-by-step and is designed to run in **Google Colab** with your Google Drive as storage. It mirrors all the script functionality and is the best place to experiment with prompts and inspect intermediate results.
-
----
-
-## 🔌 Using as a Library
+## Using as a Library
 
 ```python
 import os
@@ -158,60 +129,31 @@ results = process_book(
     output_folder="output/",
     entity_types=config.ENTITY_TYPES,
     model_id=config.MODEL_ID,
-    thinking_level="medium",   # faster, slightly less accurate
-    start_page=0,
-    end_page=10,               # None = all pages
 )
 
 generate_html_edition(
     results=results,
     output_path="output/my_edition.html",
-    title="Reuss-Thüringen 1865",
+    title="My Digital Edition",
     entity_colors=config.ENTITY_COLORS,
     entity_labels=config.ENTITY_LABELS,
-    image_folder="images/",   # set to None to skip facsimile embedding
+    region_colors=config.REGION_COLORS,
+    region_labels=config.REGION_LABELS,
 )
 ```
 
----
-
-## 📊 Output Files
-
-After a run, `output/` contains:
+## Output Files
 
 ```
 output/
 ├── json/
-│   ├── page_0015.json       # Per-page result with full structure + entities
-│   ├── page_0016.json
-│   └── …
-├── digital_edition_complete.json   # All pages combined
-├── digital_edition.html            # ← Open this in your browser
-└── digital_edition_complete.csv    # (after running export_entities.py)
+│   ├── page_0001.json                 # Per-page result with regions + entities
+│   └── ...
+├── digital_edition_complete.json      # All pages combined
+├── digital_edition.html               # Interactive HTML viewer
+└── geocode_cache.json                 # Cached geocoding results
 ```
 
----
+## License
 
-## 🛠 Tips & Troubleshooting
-
-**Slow processing?** Set `--thinking none` or `--thinking low` — much faster, marginally less accurate.
-
-**JSON parse errors?** The pipeline logs warnings and skips malformed model responses. Re-run `--start <page>` to resume from the failed page.
-
-**Images not found?** Check `IMAGE_FOLDER` in `config.py` or pass `--images <path>` explicitly to the script.
-
-**Rate limits?** The IIIF downloader respects a configurable `--delay` (default 0.5 s). For the Gemini API, consider processing pages in smaller batches with `--start` / `--end`.
-
----
-
-## 📄 License
-
-MIT — see `LICENSE` for details.
-
----
-
-## 🙏 Acknowledgements
-
-- [Bayerische Staatsbibliothek / MDZ](https://www.digitale-sammlungen.de/) for openly publishing historical documents via IIIF
-- [Google Gemini](https://ai.google.dev/) multimodal API
-- The digital humanities community for NER schema inspiration
+MIT

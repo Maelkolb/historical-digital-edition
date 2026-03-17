@@ -16,20 +16,18 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export entities to CSV.")
     parser.add_argument(
-        "--json",
-        required=True,
+        "--json", required=True,
         help="Path to digital_edition_complete.json",
     )
     parser.add_argument(
-        "--out",
-        default=None,
+        "--out", default=None,
         help="Output CSV path. Defaults to same directory as JSON.",
     )
     args = parser.parse_args()
 
     json_path = Path(args.json)
     if not json_path.exists():
-        print(f"❌  File not found: {json_path}")
+        print(f"Error: File not found: {json_path}")
         sys.exit(1)
 
     csv_path = Path(args.out) if args.out else json_path.with_suffix(".csv")
@@ -52,7 +50,7 @@ def main() -> None:
                     ent.get("context", ""),
                 ])
 
-    print(f"✅  Entities exported to {csv_path}")
+    print(f"Entities exported to {csv_path}")
 
     # Frequency summary
     freq: dict = {}
@@ -61,9 +59,9 @@ def main() -> None:
             key = (ent.get("entity_type", ""), ent.get("text", ""))
             freq[key] = freq.get(key, 0) + 1
 
-    print("\n📊  Top 20 most frequent entities:")
+    print(f"\nTop 20 most frequent entities:")
     for (etype, text), count in sorted(freq.items(), key=lambda x: -x[1])[:20]:
-        print(f"  [{etype}] '{text}': {count}×")
+        print(f"  [{etype}] '{text}': {count}x")
 
 
 if __name__ == "__main__":
